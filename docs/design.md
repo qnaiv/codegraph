@@ -1,4 +1,4 @@
-# CodeGraph: Salesforce Apex/SObject ビジュアライザー 設計ドキュメント
+# CodeGraph — Salesforce Apex/SObject 可視化ツール 設計ドキュメント
 
 ## 目次
 
@@ -14,96 +14,95 @@
 
 ## 1. プラットフォーム選定
 
-### 結論: **VS Code 拡張を採用**
+### 結論: **VS Code拡張を採用**
 
 ### 比較表
 
-| 観点 | VS Code 拡張 | ローカル Web サーバ |
+| 評価軸 | VS Code拡張 | Webアプリ（ローカルサーバ） |
 |---|---|---|
-| Apex LSP アクセス | **◎** vscode API 経由で即利用可能 | △ 独自に jorje プロセスを起動・管理する必要あり |
-| UI 自由度 | ◎ Webview = 完全な Chromium 環境 | ◎ 同等 |
-| ファイルシステム | ◎ `vscode.workspace.fs` API | ◎ Node `fs` 直接 |
-| 認証・SFDX コンテキスト | **◎** 既存セッションを継承 | × 独自管理が必要 |
-| 配布 | ◎ `.vsix` / Marketplace | △ npm install + サーバ起動手順が必要 |
-| 複雑度 | **低** | 高（LSP ブリッジが必要） |
+| **LSPアクセス** | ◎ Public APIで即利用可能 | △ jorjeを独自起動、Java管理が必要 |
+| **UI自由度** | ○ Webview = 完全Chromium環境 | ◎ 制限なし |
+| **ファイルシステム** | ○ `vscode.workspace.fs` | ◎ Node `fs` 直接 |
+| **認証・SFDX連携** | ◎ SFDX CLI文脈を継承 | △ 独自設定が必要 |
+| **配布** | ○ `.vsix` / Marketplace | ○ npm / バイナリ |
+| **プロセス複雑度** | ◎ 拡張ホスト + Webview の2層 | △ Webサーバ + LSPブリッジ + UI の3層 |
 
-### 決定理由
+### 選定理由
 
-Salesforce Extensions for VS Code が既に Apex Language Server (jorje) を起動・管理している。  
-VS Code 拡張からは以下の**パブリック API** を通じて LSP 機能を直接利用できる。
+Salesforce Extensions for VS Code はインストール済み環境で Apex Language Server（jorje）をすでに起動している。VS Code拡張からは `vscode.commands.executeCommand` という Public API でそのLSPにルーティングできるため、Language Serverの起動・管理コストがゼロになる。
 
-```typescript
-// LSP を使わずとも VS Code API 経由でシンボル・参照を取得できる
-vscode.commands.executeCommand<vscode.SymbolInformation[]>(
-  'vscode.executeWorkspaceSymbolProvider', query
+```ts
+// LSPへのアクセス例（Public API 経由）
+const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
+  'vscode.executeWorkspaceSymbolProvider',
+  query
 );
-vscode.commands.executeCommand<vscode.Location[]>(
-  'vscode.executeReferenceProvider', uri, position
+const refs = await vscode.commands.executeCommand<vscode.Location[]>(
+  'vscode.executeReferenceProvider',
+  uri,
+  position
 );
 ```
 
-Web アプリの場合、jorje のプロセス管理・Java ランタイム検出・LSP ワイヤプロトコルの実装が必要になり、複雑度が大幅に増す。VS Code の Webview は完全な Chromium 環境であるため UI 上の制約はない。
+WebviewはフルChromium環境なのでUI制約は実質ゼロ。Webアプリのメリット（UI自由度）はVS Code拡張でも同等に得られる。
 
 ---
 
 ## 2. システムアーキテクチャ
 
-### 全体構成
+### コンポーネント図
 
 ```mermaid
 graph TB
     subgraph Host["Extension Host (Node.js)"]
         ExtMain["extension.ts\n(エントリポイント)"]
 
-        subgraph LSP["LSP 統合レイヤー"]
+        subgraph LSP["LSP統合層"]
             SymbolProvider["SymbolIndexer\n(documentSymbol)"]
             RefProvider["ReferenceResolver\n(references / definition)"]
         end
 
-        subgraph Parser["補完パーサーレイヤー"]
+        subgraph Parser["補完パーサー層"]
             ApexParser["ApexASTParser\n(apex-parser / ANTLR4)"]
-            SOQLExtractor["SOQLExtractor\n(regex + AST walk)"]
+            SOQLExtractor["SOQLExtractor\n(AST walk + regex)"]
             XMLParser["SObjectMetaParser\n(fast-xml-parser)"]
         end
 
         subgraph Graph["グラフエンジン"]
-            GraphBuilder["GraphBuilder\n(LSP + パーサーをマージ)"]
+            GraphBuilder["GraphBuilder\n(LSP + parser のマージ)"]
             GraphStore["GraphStore\n(インメモリグラフ状態)"]
             FileWatcher["FileWatcher\n(onDidChangeTextDocument)"]
         end
 
-        subgraph Persist["永続化レイヤー"]
+        subgraph Persist["永続化層"]
             AnnotationStore["AnnotationStore\n(.codegraph.json)"]
-            LayoutStore["LayoutStore\n(ノード座標をビュー別に保存)"]
+            LayoutStore["LayoutStore\n(ノード位置 per ビュー)"]
         end
 
-        WebviewMgr["WebviewPanelManager"]
         MsgBus["MessageBus\n(postMessage / onDidReceiveMessage)"]
     end
 
     subgraph Webview["Webview Panel (Chromium)"]
-        subgraph React["React アプリケーション"]
+        subgraph ReactApp["React Application"]
             Canvas["CanvasLayer\n(React Flow)"]
 
-            subgraph NodeComp["ノードコンポーネント"]
+            subgraph NodeComps["カスタムノード"]
                 ClassNode["ApexClassNode"]
                 TriggerNode["ApexTriggerNode"]
                 SObjectNode["SObjectNode"]
                 MethodNode["MethodNode (展開時)"]
+                StickyNode["StickyNoteNode"]
             end
 
             subgraph Controls["コントロール"]
-                GranularitySwitch["GranularityToggle\n(class / method / soql)"]
+                GranularityToggle["GranularityToggle\n(class / method / soql)"]
                 RefHighlighter["ReferenceHighlighter"]
                 MiniMap["MiniMapPanel"]
-                SearchBar["QuickSearch"]
+                SearchBar["QuickSearch (Cmd+K)"]
+                FilterPanel["FilterPanel"]
             end
 
-            subgraph Whiteboard["ホワイトボードレイヤー"]
-                StickyNotes["StickyNoteCanvas"]
-                Freehand["FreehandLayer\n(rough.js)"]
-                AttachLines["AnnotationEdges"]
-            end
+            Whiteboard["WhiteboardLayer\n(rough.js freehand)"]
         end
 
         ZustandStore["Zustand Store"]
@@ -116,9 +115,9 @@ graph TB
         SFDX["sfdx-project.json"]
     end
 
-    ExtMain --> SymbolProvider
-    ExtMain --> WebviewMgr
-    ExtMain --> FileWatcher
+    ExtMain --> LSP
+    ExtMain --> Graph
+    ExtMain --> MsgBus
 
     SymbolProvider --> GraphBuilder
     RefProvider --> GraphBuilder
@@ -130,21 +129,22 @@ graph TB
     GraphStore --> MsgBus
     AnnotationStore --> MsgBus
     LayoutStore --> MsgBus
+    FileWatcher --> GraphBuilder
 
-    WebviewMgr --> MsgBus
     MsgBus <--> MsgHandler
     MsgHandler --> ZustandStore
     ZustandStore --> Canvas
+    ZustandStore --> NodeComps
+    ZustandStore --> Controls
+    ZustandStore --> Whiteboard
 
-    FileWatcher --> GraphBuilder
-
-    ApexFiles --> SymbolProvider
+    ApexFiles --> LSP
     ApexFiles --> ApexParser
     MetaFiles --> XMLParser
     SFDX --> ExtMain
 ```
 
-### データフロー（シーケンス）
+### データフロー（シーケンス図）
 
 ```mermaid
 sequenceDiagram
@@ -152,34 +152,34 @@ sequenceDiagram
     participant Webview
     participant MsgBus
     participant GraphBuilder
-    participant LSP as Apex LSP (vscode API)
-    participant Parser as 補完パーサー
+    participant LSP as Apex LSP (jorje)
+    participant Parser as 補完パーサー群
 
     User->>Webview: CodeGraph パネルを開く
     Webview->>MsgBus: READY
     MsgBus->>GraphBuilder: bootstrap()
 
-    GraphBuilder->>LSP: executeWorkspaceSymbolProvider()
+    GraphBuilder->>LSP: workspace/symbol (全シンボル)
     LSP-->>GraphBuilder: SymbolInformation[]
-    GraphBuilder->>Parser: parseApexAST(files)
+    GraphBuilder->>Parser: parseApexAST(.cls/.trigger)
     Parser-->>GraphBuilder: ClassAST[]
-    GraphBuilder->>Parser: parseSObjectXML(metaFiles)
+    GraphBuilder->>Parser: parseSObjectXML(.object-meta.xml)
     Parser-->>GraphBuilder: SObjectDef[]
 
-    GraphBuilder->>GraphBuilder: buildEdges()
+    GraphBuilder->>GraphBuilder: buildEdges()\n[継承/実装/SOQL/DML/trigger-on]
     GraphBuilder->>MsgBus: GRAPH_UPDATE(GraphSnapshot)
     MsgBus->>Webview: postMessage(GRAPH_UPDATE)
-    Webview->>Webview: ノード・エッジを描画
+    Webview->>Webview: React Flowでノード・エッジを描画
 
-    User->>Webview: ClassNode をクリック
+    User->>Webview: クラスノードをクリック
     Webview->>MsgBus: GET_REFERENCES {nodeId}
-    MsgBus->>LSP: executeReferenceProvider(uri, position)
+    MsgBus->>LSP: textDocument/references
     LSP-->>MsgBus: Location[]
     MsgBus->>Webview: REFERENCES_RESULT
     Webview->>Webview: 参照ノードをハイライト
 
-    User->>Webview: 付箋を追加
-    Webview->>MsgBus: SAVE_ANNOTATION(annotation)
+    User->>Webview: 付箋ノードを追加
+    Webview->>MsgBus: SAVE_ANNOTATION(StickyNote)
     MsgBus->>MsgBus: AnnotationStore.persist()
 ```
 
@@ -187,67 +187,46 @@ sequenceDiagram
 
 ## 3. 技術スタック選定
 
-### Extension Host
+### 拡張ホスト
 
 | 技術 | 採用理由 |
 |---|---|
-| **TypeScript** | VS Code 拡張の標準。LSP プロトコル型定義と完全一致 |
-| **vscode-languageclient** | jorje への JSON-RPC 接続を管理する公式ライブラリ |
-| **apex-parser** (`@apexdevtools/apex-parser`) | ANTLR4 ベースの Apex 文法。SOQL・DML 抽出に使用 |
-| **fast-xml-parser** | `.object-meta.xml` の軽量 JSON 変換 |
+| **TypeScript** | VS Code拡張の標準。LSPプロトコル型定義と完全一致 |
+| **vscode-languageclient** | jorjeへのJSON-RPC接続管理。公式npm |
+| **apex-parser** (`@apexdevtools/apex-parser`) | ANTLR4ベースのApex文法。SOQLクエリ・DML操作の抽出に使用 |
+| **fast-xml-parser** | `.object-meta.xml` の高速・軽量な解析 |
 
-### Webview
+### Webview（React アプリ）
 
 | 技術 | 採用理由 |
 |---|---|
-| **React 18** | コンポーネントモデルがノード/エッジ構造に自然にマッチ |
-| **React Flow** | カスタムノード = React コンポーネント。pan/zoom/selection を内蔵 |
-| **Zustand** | Redux より軽量。Canvas 重アプリで再レンダリングを最小化 |
-| **@dagrejs/dagre** | 初期自動配置（LR/TB レイアウト） |
-| **rough.js** | 手書き風フリーハンドアノテーション |
-| **Vite** | Webview バンドルの高速ビルド・HMR |
+| **React 18** | カスタムノード = Reactコンポーネントという自然なモデル |
+| **React Flow (xyflow)** | 後述の比較で最適と判断 |
+| **Zustand** | Canvas重アプリで不要な再レンダリングを最小化。Reduxは過剰 |
+| **@dagrejs/dagre** | 初期自動レイアウト（LR/TB切り替え） |
+| **rough.js** | フリーハンドアノテーションの手書き風描画 |
+| **Vite** | Webviewバンドルの高速ビルド・HMR |
 
 ### 可視化ライブラリ比較
 
-| ライブラリ | 強み | 弱み | 判定 |
+| ライブラリ | 長所 | 短所 | 判定 |
 |---|---|---|---|
-| **React Flow** | React ネイティブ、カスタムノード容易、minimap・selection 内蔵 | グラフアルゴリズムは別途 dagre が必要 | **採用** |
-| Cytoscape.js | グラフアルゴリズム豊富、大規模グラフに強い | React 非ネイティブ、命令型 API との統合が煩雑 | 不採用 |
-| D3.js force | 最大の柔軟性 | DOM 操作が React と競合、pan/zoom の自前実装コストが高い | 不採用 |
+| **React Flow** | React ネイティブ。カスタムノード = Reactコンポーネント。pan/zoom/選択が組み込み。MiniMap・Backgroundも付属 | グラフアルゴリズム非内蔵（Dagre別途） | **採用** |
+| Cytoscape.js | グラフアルゴリズム充実。大規模グラフ（1000+ノード）向け | Reactと相性が悪い（ref経由の命令型API）。スタイリングが煩雑 | 大規模時の代替候補 |
+| D3.js force | 最大の柔軟性。フォースシミュレーション | React の DOM 管理と競合。pan/zoom の自前実装コストが高い | 不採用 |
+
+React Flowを採用する決定的な理由: カスタムノードが純粋なReactコンポーネントとして書けるため、`ApexClassNode` は単なるスタイル付きdivになる。Dagreとの統合も`@xyflow/react`のドキュメントに例示されており、学習コストが最小。
 
 ---
 
 ## 4. データモデル定義
 
+### 共有型定義 (`src/shared/types.ts`)
+
 ```typescript
 // ============================================================
-// 基本型
+// プリミティブ
 // ============================================================
-
-export type NodeKind =
-  | 'apex-class'
-  | 'apex-interface'
-  | 'apex-enum'
-  | 'apex-trigger'
-  | 'apex-method'
-  | 'apex-constructor'
-  | 'sobject'
-  | 'sobject-field';
-
-export type EdgeKind =
-  | 'inherits'         // class extends class
-  | 'implements'       // class implements interface
-  | 'calls'            // method → method 呼び出し
-  | 'soql-references'  // method が SObject を SOQL で参照
-  | 'dml-insert'
-  | 'dml-update'
-  | 'dml-delete'
-  | 'field-lookup'     // SObject フィールド → SObject (Lookup/MD)
-  | 'instantiates'     // new ClassName()
-  | 'trigger-on'       // trigger が SObject 上で発火
-  | 'annotation-attach'; // 付箋がノードにピン留め
-
-export type GranularityLevel = 'class' | 'method' | 'soql';
 
 export interface LSPRange {
   start: { line: number; character: number };
@@ -266,29 +245,58 @@ export interface Viewport {
 }
 
 // ============================================================
+// ノード種別・エッジ種別
+// ============================================================
+
+export type NodeKind =
+  | 'apex-class'
+  | 'apex-interface'
+  | 'apex-enum'
+  | 'apex-trigger'
+  | 'apex-method'
+  | 'apex-constructor'
+  | 'sobject'
+  | 'sobject-field';
+
+export type EdgeKind =
+  | 'inherits'          // class extends class
+  | 'implements'        // class implements interface
+  | 'calls'             // メソッド → メソッド
+  | 'soql-references'   // メソッド → SObject（SOQL）
+  | 'dml-insert'        // DML: insert / upsert
+  | 'dml-update'
+  | 'dml-delete'
+  | 'field-lookup'      // SObjectフィールド → SObject（Lookup/MD）
+  | 'instantiates'      // new ClassName()
+  | 'trigger-on'        // trigger fires on SObject
+  | 'annotation-attach';// アノテーション付箋 → ノード
+
+export type GranularityLevel = 'class' | 'method' | 'soql';
+
+// ============================================================
 // Apex ノード
 // ============================================================
 
 export interface ApexClassNode {
-  id: string;                    // 例: "cls:AccountService"
+  id: string;                      // 例: "cls:AccountService"
   kind: 'apex-class' | 'apex-interface' | 'apex-enum';
-  label: string;                 // クラス名（短縮）
-  fullyQualifiedName: string;    // namespace.ClassName
-  uri: string;                   // ファイルパス
+  label: string;                   // クラス名
+  fullyQualifiedName: string;      // namespace.ClassName
+  uri: string;                     // ファイルパス
   range: LSPRange;
-  namespace?: string;            // マネージドパッケージ namespace
+  namespace?: string;              // マネージドパッケージのnamespace
   isAbstract: boolean;
   isVirtual: boolean;
   accessModifier: 'public' | 'private' | 'global' | 'protected';
-  annotations: ApexAnnotation[]; // @AuraEnabled, @InvocableMethod 等
-  methods: ApexMethodNode[];     // method 粒度で展開時に使用
-  innerClasses: string[];        // 内部クラスのノード ID
+  annotations: ApexAnnotation[];   // @AuraEnabled, @InvocableMethod など
+  methods: ApexMethodNode[];       // Methodレベル粒度で展開
+  innerClasses: string[];          // 内部クラスのノードID
   isTestClass: boolean;
   sharingMode?: 'with sharing' | 'without sharing' | 'inherited sharing';
 }
 
 export interface ApexMethodNode {
-  id: string;                    // 例: "method:AccountService.getAccounts"
+  id: string;                      // 例: "method:AccountService.getAccounts"
   kind: 'apex-method' | 'apex-constructor';
   label: string;
   parentClassId: string;
@@ -299,17 +307,17 @@ export interface ApexMethodNode {
   accessModifier: 'public' | 'private' | 'global' | 'protected';
   isStatic: boolean;
   annotations: ApexAnnotation[];
-  soqlQueries: SOQLQuery[];      // メソッド本体から抽出
+  soqlQueries: SOQLQuery[];        // メソッド本体から抽出
   dmlOperations: DMLOperation[];
 }
 
 export interface ApexTriggerNode {
-  id: string;                    // 例: "trigger:AccountTrigger"
+  id: string;                      // 例: "trigger:AccountTrigger"
   kind: 'apex-trigger';
   label: string;
   uri: string;
   range: LSPRange;
-  targetSObject: string;         // SObject API 名
+  targetSObject: string;           // SObject API名
   events: TriggerEvent[];
 }
 
@@ -319,7 +327,7 @@ export interface ApexParameter {
 }
 
 export interface ApexAnnotation {
-  name: string;
+  name: string;                    // 'AuraEnabled', 'InvocableMethod' など
   parameters?: Record<string, string>;
 }
 
@@ -333,24 +341,24 @@ export type TriggerEvent =
 // ============================================================
 
 export interface SObjectNode {
-  id: string;                    // 例: "sobject:Account"
+  id: string;                      // 例: "sobject:Account"
   kind: 'sobject';
-  label: string;                 // API 名（Account, MyObject__c）
+  label: string;                   // API名 (Account, MyObject__c)
   isCustom: boolean;
-  isCustomMetadata: boolean;     // __mdt サフィックス
-  uri?: string;                  // .object-meta.xml のパス（標準オブジェクトは undefined）
-  fields: SObjectFieldNode[];    // sobject 粒度で展開時に使用
+  isCustomMetadata: boolean;       // __mdt サフィックス
+  uri?: string;                    // .object-meta.xml のパス（標準オブジェクトはundefined）
+  fields: SObjectFieldNode[];      // SObjectレベル粒度で展開
   recordTypes: string[];
 }
 
 export interface SObjectFieldNode {
-  id: string;                    // 例: "field:Account.Name"
+  id: string;                      // 例: "field:Account.Name"
   kind: 'sobject-field';
   label: string;
   apiName: string;
   parentSObjectId: string;
   fieldType: SalesforceFieldType;
-  referenceTo?: string[];        // Lookup/MD の参照先 SObject API 名
+  referenceTo?: string[];          // Lookup/MDの参照先SObject API名
   relationshipName?: string;
   required: boolean;
   externalId: boolean;
@@ -364,21 +372,21 @@ export type SalesforceFieldType =
   | 'EncryptedText' | 'AutoNumber';
 
 // ============================================================
-// SOQL・DML 抽出結果
+// SOQL・DML抽出結果
 // ============================================================
 
 export interface SOQLQuery {
-  raw: string;                   // SOQL 全文
-  fromObject: string;            // FROM 句のオブジェクト
-  additionalObjects: string[];   // サブクエリ等で参照するオブジェクト
-  fields: string[];              // SELECT フィールド一覧
+  raw: string;                     // SOQLクエリ文字列全体
+  fromObject: string;              // FROM句のメインオブジェクト
+  additionalObjects: string[];     // サブクエリ等で追加参照されるオブジェクト
+  fields: string[];                // SELECT句のフィールド一覧
   hasSubquery: boolean;
-  range: LSPRange;               // メソッド内の位置
+  range: LSPRange;                 // メソッド内の位置
 }
 
 export interface DMLOperation {
   type: 'insert' | 'update' | 'upsert' | 'delete' | 'undelete' | 'merge';
-  targetType: string;            // 操作対象の SObject 型
+  targetType: string;              // 操作対象SObject型名
   range: LSPRange;
 }
 
@@ -396,14 +404,14 @@ export interface GraphEdge {
 }
 
 export interface EdgeMetadata {
-  callSites?: LSPRange[];        // 'calls' エッジ: 呼び出し箇所
-  soqlQuery?: SOQLQuery;         // 'soql-references' エッジ
-  dmlOp?: DMLOperation;          // 'dml-*' エッジ
-  relationshipName?: string;     // 'field-lookup' エッジ
+  callSites?: LSPRange[];          // 'calls' エッジ用
+  soqlQuery?: SOQLQuery;           // 'soql-references' エッジ用
+  dmlOp?: DMLOperation;           // 'dml-*' エッジ用
+  relationshipName?: string;       // 'field-lookup' エッジ用
 }
 
 // ============================================================
-// ホワイトボード・アノテーション
+// ホワイトボード / アノテーション
 // ============================================================
 
 export type AnnotationKind = 'sticky-note' | 'freehand-stroke' | 'label-pin';
@@ -411,22 +419,24 @@ export type AnnotationKind = 'sticky-note' | 'freehand-stroke' | 'label-pin';
 export interface StickyNote {
   id: string;
   kind: 'sticky-note';
-  content: string;               // Markdown テキスト
+  content: string;                 // Markdownテキスト
   position: XYPosition;
   size: { width: number; height: number };
-  color: 'yellow' | 'blue' | 'green' | 'pink' | 'orange';
-  attachedToNodeId?: string;     // ノードにピン留めすると追従ドラッグ
-  createdAt: string;             // ISO 8601
+  color: StickyColor;
+  attachedToNodeId?: string;       // ノードにピンした場合、ドラッグに追従
+  createdAt: string;               // ISO 8601
   updatedAt: string;
 }
+
+export type StickyColor = 'yellow' | 'blue' | 'green' | 'pink' | 'orange';
 
 export interface FreehandStroke {
   id: string;
   kind: 'freehand-stroke';
-  points: XYPosition[];          // rough.js linearPath に渡す点列
+  points: XYPosition[];            // rough.js linearPath 用座標列
   color: string;
   strokeWidth: number;
-  roughness: number;             // rough.js の roughness パラメータ
+  roughness: number;               // rough.js roughness パラメータ
 }
 
 export interface LabelPin {
@@ -434,7 +444,7 @@ export interface LabelPin {
   kind: 'label-pin';
   text: string;
   attachedToNodeId: string;
-  offset: XYPosition;            // ノード中心からのオフセット
+  offset: XYPosition;             // ノード中心からのオフセット
 }
 
 export type Annotation = StickyNote | FreehandStroke | LabelPin;
@@ -456,11 +466,11 @@ export interface NodeFilter {
   hideTestClasses: boolean;
   hideManagedPackages: boolean;
   sobjectTypes: 'all' | 'custom-only' | 'referenced-only';
-  minConnectionCount: number;    // これ未満の接続数のノードを非表示
+  minConnectionCount: number;      // これ未満のエッジ数のノードを非表示
 }
 
 // ============================================================
-// グラフスナップショット（MessageBus で送受信する全データ）
+// グラフスナップショット（MessageBus経由で転送）
 // ============================================================
 
 export type GraphNode =
@@ -476,17 +486,17 @@ export interface GraphSnapshot {
   nodes: GraphNode[];
   edges: GraphEdge[];
   annotations: Annotation[];
-  layoutState: Record<string, XYPosition>; // nodeId → 座標
+  layoutState: Record<string, XYPosition>; // nodeId → position
   viewState: ViewState;
 }
 
 // ============================================================
-// MessageBus プロトコル（Extension Host ↔ Webview）
+// MessageBus プロトコル（拡張ホスト ↔ Webview）
 // ============================================================
 
 export type ExtensionToWebviewMessage =
   | { type: 'GRAPH_UPDATE';      payload: GraphSnapshot }
-  | { type: 'REFERENCES_RESULT'; payload: { nodeId: string; edgeIds: string[] } }
+  | { type: 'REFERENCES_RESULT'; payload: { nodeId: string; locations: LSPRange[] } }
   | { type: 'DEFINITION_RESULT'; payload: { uri: string; range: LSPRange } }
   | { type: 'PROGRESS';          payload: { stage: string; percent: number } }
   | { type: 'ERROR';             payload: { message: string; code: string } };
@@ -508,91 +518,92 @@ export type WebviewToExtensionMessage =
 
 ### 5.1 粒度切り替え（セマンティックズーム）
 
-React Flow のズームとは別に、**意味レベル**でビューを切り替える。
+React Flowのカメラズームとは別に、**意味的な粒度**をトグルで切り替える。
 
 ```
-[Class] ←→ [Method] ←→ [SOQL]
+[Class] ──── [Method] ──── [SOQL]
+  ↑              ↑              ↑
+  全体像      内部構造      クエリ詳細
 ```
 
-#### Class レベル（デフォルト）
+**Class Level（デフォルト）**
+- 各ノード = クラス/SObjectのサマリーカード
+- バッジ: "12 methods · 3 SOQL" などを表示
+- エッジ: 継承・implements・trigger-on・クラス間DML/SOQL参照
+- 想定ノード数: 20〜100
 
-- 各ノードはクラス名・アイコン（class/trigger/sobject）・サマリバッジ（例: "12 methods, 3 SOQL"）のカード
-- エッジ: inherits, implements, trigger-on, DML/SOQL 参照（クラス間）
-- 20〜100 ノード程度のヘリコプタービュー
+**Method Level**
+- クラスノードをダブルクリックで展開
+- React Flow の `parentId` を使いネストサブグラフを描画
+- 展開後のエッジ: クロスクラスのメソッド呼び出しも表示
+- 他クラスは折りたたみのまま維持
 
-#### Method レベル
+**SOQL Level**
+- メソッドノードをダブルクリックで展開
+- SOQLクエリボックス・DML操作ボックスがインライン表示
+- SOQLノード → SObjectノードへのエッジ（フィールドも表示可）
+- 「データベースクエリビュー」として使用
 
-- クラスノードをダブルクリックすると**その場で展開**し、子メソッドノードが表示される
-- 他クラスは折りたたみ状態を維持
-- React Flow の `parentId` によるサブグラフとして実装
-- クロスクラスのメソッド呼び出しエッジも描画
-
-#### SOQL レベル
-
-- メソッドノードをダブルクリックすると展開
-- SOQL クエリボックス・DML オペレーションボックスがインライン表示
-- 参照する SObject ノードへのエッジを描画（フィールドレベルも選択可）
-
-**遷移実装**: 粒度変更時に Zustand ストアの `granularity` を更新 → 各ノードが `type` プロパティを再評価（collapsed / expanded） → React Flow の `fitView({ duration: 600 })` でスムーズアニメーション
+粒度変更の実装: `granularity` が変わると各ノードは `type` prop（collapsed/expanded）を再評価し、React Flowが `fitView({ duration: 600 })` でアニメーション遷移する。
 
 ### 5.2 参照ハイライト
 
-ノードをクリックした際のフロー:
+```
+クリック → references取得 → 参照ノード強調 → ESCで解除
+```
 
-1. `GET_REFERENCES` メッセージを Extension Host に送信
-2. `vscode.commands.executeCommand('vscode.executeReferenceProvider', uri, position)` を実行
-3. 返却された `Location[]` をノード ID に変換（uri + range → nodeId インデックスを使用）
-4. 参照ノードに**オレンジのリング**と z-index 上昇を適用
-5. 非参照ノードを**20% 不透明度**にディム（CSS filter）
-6. 参照元 → 選択ノードへの**アンバー破線エッジ**を一時描画
-7. Escape キーまたは背景クリックでハイライトをクリア
+1. ノードをクリック → `GET_REFERENCES` を送信
+2. `textDocument/references` の結果 `Location[]` を受信
+3. 各LocationをグラフインデックスでnodeIdに変換（uri + range → nodeId）
+4. ハイライト適用:
+   - 参照元ノード: オレンジのリング、z-index 上昇
+   - 非参照ノード: opacity 20%にディム（CSS filter）
+   - 選択ノード → 参照元ノードへ: アンバーの点線エッジ
+5. ESCキーまたは背景クリックで全解除
 
-ノードタイトルクリックで `OPEN_FILE` メッセージ → `vscode.window.showTextDocument` で該当行を VS Code エディタで開く。
+ノードタイトルクリック → `OPEN_FILE` → `vscode.window.showTextDocument` でエディタの対象行に遷移。
 
 ### 5.3 ホワイトボード
 
-#### 付箋ノード（StickyNote）
+**付箋ノード (StickyNoteNode)**
+- React Flowカスタムノード（`type: 'sticky'`）
+- ハンドルなし、ドラッグ可、ズーム追従
+- `attachedToNodeId` が設定された場合、ターゲットノードのドラッグに追従
+- コンテンツは `<textarea>` でMarkdown入力（auto-resize）
+- 右クリックメニュー: 「ノードにピン」「色変更」「削除」
 
-- React Flow カスタムノード（`type: 'sticky'`）
-- handles なし、ドラッグ可能・ズームに追従
-- `attachedToNodeId` が設定されている場合、親ノードのドラッグに追従
-- コンテンツは `<textarea>` with auto-resize（Markdown をそのまま保存）
-- 右クリックメニュー: ピン留め / 色変更 / 削除
-
-#### フリーハンド描画（FreehandStroke）
-
+**フリーハンド描画**
 - `D` キーで描画モードに切り替え
-- 背景キャンバスへのマウスイベントで `rough.js` の `linearPath` を蓄積
-- mouseup 時に stroke を Annotation として保存、SVG foreign object として描画
-- rough.js の `roughness` パラメータで手書き感を調整
+- マウスイベントを rough.js の `linearPath` に蓄積
+- mouseup でストロークを `FreehandStroke` として保存
+- SVGパスとしてReact Flow上に描画（canvas レイヤーを背景に配置）
 
-#### アノテーションピン留め
-
-- 付箋を右クリック → "ノードにピン留め" → 対象ノードをクリック
-- `attachedToNodeId` をセット
-- 付箋とノード間に破線エッジ（`type: 'annotation-attach'`）を表示
+**ラベルピン (LabelPin)**
+- 付箋ノードを右クリック → 「ノードにピン」→ ターゲットノードをクリック
+- `annotation-attach` エッジ（点線）で接続を可視化
 
 ### 5.4 レイアウト・ナビゲーション
 
 | 機能 | 実装 |
 |---|---|
-| 初期自動レイアウト | Dagre LR（継承階層）/ TB（データフロー） |
-| 手動移動 | React Flow の draggable、即座にポジション保存 |
-| ポジション永続化 | `.codegraph.json` にビュー別・粒度別で保存 |
-| ミニマップ | React Flow 組み込み `<MiniMap>`、ノード種別で色分け |
-| クイック検索 | `Cmd/Ctrl+K` → フローティング検索バー → `fitView` でフォーカス |
-| フィルタパネル | サイドパネルで NodeFilter を操作（テストクラス非表示等） |
+| 初期自動レイアウト | Dagre LR（継承ヒエラルキー）/ TB（データフロー） |
+| 手動オーバーライド | 位置を即座に `LayoutStore` に永続化 |
+| MiniMap | React Flow 組み込みの `<MiniMap>`（ノード種別で色分け） |
+| クイック検索 | `Cmd/Ctrl+K` でフローティング検索バー。選択で `fitView` |
+| フィルターパネル | テストクラス非表示・マネージドパッケージ非表示・SObjectタイプ絞り込み |
 
-### 5.5 永続化ファイル
+### 5.5 永続化
 
-`.codegraph.json` をプロジェクトルートに保存。チームで共有するためバージョン管理に含める。
+- アノテーション・レイアウトはワークスペースルートの `.codegraph.json` に保存
+- チームでの共有のためgitにコミット推奨（`.gitignore` に例外追加）
 
 ```json
+// .codegraph.json の構造例
 {
   "version": 1,
   "annotations": [...],
   "layouts": {
-    "class": { "nodeId": { "x": 100, "y": 200 } },
+    "class": { "cls:AccountService": { "x": 100, "y": 200 } },
     "method": {}
   }
 }
@@ -604,158 +615,204 @@ React Flow のズームとは別に、**意味レベル**でビューを切り�
 
 ### Phase 0: プロジェクトスキャフォールド（4日）
 
-| タスク | 工数 | 備考 |
+| タスク | 工数 | 依存 |
 |---|---|---|
-| VS Code 拡張ボイラープレート（TypeScript）| 0.5d | `yo code` テンプレート |
-| Vite + React Webview ビルドパイプライン | 1d | 開発時 HMR 対応 |
-| MessageBus スケルトン（型付き） | 0.5d | postMessage 送受信 |
-| React Flow 基本キャンバス（ハードコードノード） | 1d | pan/zoom/drag 動作確認 |
-| Zustand ストアスケルトン | 0.5d | nodes / edges / viewState スライス |
-| ESLint + Prettier + TypeScript strict 設定 | 0.5d | |
+| VS Code拡張ボイラープレート生成（`yo code`）、TypeScript設定 | 0.5d | — |
+| Vite + React Webviewビルドパイプライン（HMR対応） | 1d | — |
+| 拡張ホスト ↔ Webview MessageBusスケルトン（型付き） | 0.5d | — |
+| React Flow基本キャンバス（ハードコードテストノードで動作確認） | 1d | MsgBus |
+| Zustandストアスケルトン（nodes / edges / viewState スライス） | 0.5d | React Flow |
+| ESLint・Prettier・TypeScript strict modeのCI設定 | 0.5d | — |
 
-**Phase 0 完了基準**: パネルを開くとドラッグ可能なテストグラフが表示される
+**成果物**: パネルを開くとドラッグ可能なテストグラフが表示される拡張
 
-### Phase 1: LSP 統合（8日）
+---
+
+### Phase 1: LSP統合（8日）
 
 | タスク | 工数 | 依存 |
 |---|---|---|
-| Salesforce 拡張の存在検出・VS Code API 利用確認 | 1d | Ph0 |
-| `executeWorkspaceSymbolProvider` でシンボル全取得 | 1.5d | LSP 接続確認 |
-| `executeDocumentSymbolProvider` でファイル単位取得 | 1.5d | LSP 接続確認 |
-| ApexClassNode / ApexMethodNode の構築 | 1d | シンボルインデクサー |
-| `executeReferenceProvider` でクリックハイライト | 1.5d | シンボルインデクサー |
-| `executeDefinitionProvider` → ファイルを開く | 0.5d | LSP 接続確認 |
-| FileWatcher による増分グラフ更新（保存時） | 1d | GraphStore |
+| Salesforce拡張のLanguage Clientを検出、`executeCommand` ラッパー実装 | 1d | Ph0 |
+| `workspace/symbol` で全Apexシンボルをインデックス | 1.5d | LSP接続 |
+| `textDocument/documentSymbol` をファイル単位で取得 | 1.5d | LSP接続 |
+| シンボルから `ApexClassNode` / `ApexMethodNode` を構築 | 1d | シンボルインデクサ |
+| `textDocument/references` でクリックハイライト実装 | 1.5d | シンボルインデクサ |
+| `textDocument/definition` → ファイルを開く | 0.5d | LSP接続 |
+| `FileWatcher` でファイル保存時のインクリメンタル更新 | 1d | GraphStore |
 
-**Phase 1 完了基準**: 実プロジェクトの全 Apex クラスがノードとして表示され、クリックで参照ハイライトが動作する
+**リスク対処**: jorjeへの直接LanguageClient接続がVS Code拡張分離でブロックされた場合は `vscode.executeWorkspaceSymbolProvider` などのPublic APIにフォールバック。
+
+**成果物**: 実ワークスペースの全Apexクラスがノード表示され、参照ハイライトが動作する
+
+---
 
 ### Phase 2: 補完パーサー（7日）
 
 | タスク | 工数 | 依存 |
 |---|---|---|
-| `apex-parser` ANTLR 文法の統合 | 1.5d | Ph0 |
-| メソッド本体からの SOQL 抽出 | 1.5d | apex-parser |
-| DML オペレーション抽出 | 1d | apex-parser |
-| `fast-xml-parser` で `.object-meta.xml` 解析 | 1d | Ph0 |
-| SObjectNode 構築（フィールド・リレーション） | 1.5d | XML パーサー |
-| Lookup/MasterDetail エッジ構築 | 0.5d | SObjectNode |
+| `apex-parser` ANTLR文法の統合（TypeScriptターゲット） | 1.5d | Ph0 |
+| メソッド本体からのSOQLクエリ抽出（AST walk + regex） | 1.5d | apex-parser |
+| DML操作（insert/update/delete等）の抽出 | 1d | apex-parser |
+| `fast-xml-parser` で `.object-meta.xml` を解析 | 1d | Ph0 |
+| `SObjectNode` 構築（フィールド・リレーションシップ） | 1.5d | XMLパーサー |
+| Lookup/Master-Detailエッジビルダー | 0.5d | SObjectNode |
 
-**Phase 2 完了基準**: SObject ノードが表示され、Apex→SObject の SOQL/DML エッジが描画される
+**SOQL抽出の軽量アプローチ（MVP向け）**:
+```ts
+// ANTLRフルパース前の高速フォールバック
+const SOQL_REGEX = /\[\s*SELECT\s+.+?\s+FROM\s+(\w+)/gis;
+```
+
+**成果物**: SObjectがフィールド・リレーション付きで表示。ApexからSObjectへのDML/SOQLエッジが描画される
+
+---
 
 ### Phase 3: 可視化ポリッシュ（8日）
 
 | タスク | 工数 | 依存 |
 |---|---|---|
-| ApexClassNode カスタムコンポーネント | 1d | Ph1 |
-| SObjectNode カスタムコンポーネント | 1d | Ph2 |
-| ApexTriggerNode コンポーネント | 0.5d | Ph1 |
-| メソッドサブグラフ展開（ダブルクリック） | 2d | Ph2 |
-| 粒度トグル（class / method / soql） | 1.5d | メソッド展開 |
-| Dagre 自動レイアウト統合 | 1d | Phase 3 ノード |
-| エッジ種別スタイリング（実線/破線/色分け） | 1d | 全エッジ |
+| `ApexClassNode` カスタムReactコンポーネント | 1d | Ph1 |
+| `SObjectNode` カスタムReactコンポーネント | 1d | Ph2 |
+| `ApexTriggerNode` カスタムReactコンポーネント | 0.5d | Ph1 |
+| メソッドサブグラフ展開（ダブルクリックで in-place 展開） | 2d | Ph2 |
+| 粒度トグル（class / method / soql）の状態管理と遷移アニメーション | 1.5d | メソッド展開 |
+| Dagre自動レイアウト統合（`@dagrejs/dagre`） | 1d | Ph3ノード |
+| エッジ種別スタイリング（実線/点線/色をEdgeKindで制御） | 1d | 全エッジ |
 
-**Phase 3 完了基準**: 3段階の粒度切り替えがスムーズに動作し、ノード種別が視覚的に区別できる
+**成果物**: 3段階粒度切り替えとスタイル付きノード・エッジの完全動作
+
+---
 
 ### Phase 4: ホワイトボード機能（7日）
 
 | タスク | 工数 | 依存 |
 |---|---|---|
-| 付箋ノードコンポーネント | 1.5d | Ph3 |
-| 付箋のノードへのアタッチ・追従ロジック | 1d | 付箋コンポーネント |
-| フリーハンド描画（rough.js） | 2d | Ph3 |
-| `.codegraph.json` 永続化 | 1d | Ph4 |
+| `StickyNoteNode` カスタムReactコンポーネント | 1.5d | Ph3 |
+| 付箋ノードアタッチ（`attachedToNodeId` + 追従ドラッグ） | 1d | StickyNote |
+| フリーハンド描画キャンバス（rough.js + Dキーでモード切替） | 2d | Ph3 |
+| `.codegraph.json` へのアノテーション永続化 | 1d | Ph4 |
 | アノテーションのシリアライズ・デシリアライズ | 0.5d | 永続化 |
-| 右クリックコンテキストメニュー（ピン/削除/色変更） | 1d | 付箋コンポーネント |
+| 右クリックコンテキストメニュー（ピン・削除・色変更） | 1d | StickyNote |
 
-**Phase 4 完了基準**: 付箋を追加・保存・再起動後に復元できる。フリーハンドで線が引ける
+**成果物**: 永続化付きホワイトボードが完全動作
 
-### Phase 5: UX リファイン（5日）
+---
+
+### Phase 5: UXリファイン（5日）
 
 | タスク | 工数 | 依存 |
 |---|---|---|
-| クイック検索（Cmd+K） | 1d | Ph3 |
-| フィルタパネル（テストクラス非表示等） | 1.5d | Ph3 |
-| 参照ハイライトのオーバーレイ（ディム処理） | 1d | Ph1 |
-| レイアウト位置のビュー別永続化 | 0.5d | LayoutStore |
-| 大規模グラフ対応（200 ノード超の場合） | 1d | Ph3 |
-
-**総工数: 約 39 日（ソロ開発で約 8 週間）**
-
-### 依存関係グラフ
-
-```mermaid
-graph LR
-    P0[Phase 0\nスキャフォールド] --> P1[Phase 1\nLSP 統合]
-    P0 --> P2[Phase 2\n補完パーサー]
-    P1 --> P3[Phase 3\n可視化ポリッシュ]
-    P2 --> P3
-    P3 --> P4[Phase 4\nホワイトボード]
-    P3 --> P5[Phase 5\nUX リファイン]
-```
+| クイック検索（`Cmd+K`）+ `fitView` 遷移 | 1d | Ph3 |
+| フィルターパネル（テストクラス非表示・マネージドパッケージ非表示等） | 1.5d | Ph3 |
+| 参照ハイライトの opacity ディムオーバーレイ | 1d | Ph1 |
+| レイアウト永続化（粒度ごと） | 0.5d | LayoutStore |
+| 大規模グラフのパフォーマンス対策（200+ノード時のノードカリング） | 1d | Ph3 |
 
 ---
 
-## 7. MVP 範囲定義
+### 工数サマリー
 
-### MVP の問い
-
-> 「Apex クラスと SObject がどう繋がっているか一望でき、メモを残せる」
-
-### MVP に含む（Phase 0〜2 + Phase 3 コア）
-
-| 機能 | 説明 |
+| フェーズ | 工数 |
 |---|---|
-| ワークスペーススキャン | 全 Apex クラス・SObject をノード表示 |
-| クラスレベルエッジ | inherits / implements / trigger-on / DML/SOQL 参照 |
-| 参照ハイライト | クリック → 参照ノードをオレンジハイライト |
-| エディタ連携 | ノードタイトルクリック → 該当ファイルを VS Code で開く |
-| 付箋ノード | キャンバス上に配置・永続化（フリーハンドは除く） |
-| 自動レイアウト | 初回起動時 Dagre LR でレイアウト、ドラッグで手動調整、位置を保存 |
-| 基本フィルタ | テストクラス非表示・マネージドパッケージ非表示トグル |
-
-### MVP から除外（後続フェーズ）
-
-- メソッドレベル展開・SOQL レベルビュー
-- フリーハンド描画
-- 付箋のノードへのピン留め
-- クイック検索
-- SObject フィールドレベル詳細
-
-### MVP 完了目安: **約 4 週間**（Phase 0〜2 + Phase 3 のノード描画部分）
+| Phase 0 スキャフォールド | 4日 |
+| Phase 1 LSP統合 | 8日 |
+| Phase 2 補完パーサー | 7日 |
+| Phase 3 可視化ポリッシュ | 8日 |
+| Phase 4 ホワイトボード | 7日 |
+| Phase 5 UXリファイン | 5日 |
+| **合計** | **39日（ソロ 約8週間）** |
 
 ---
 
-## 付録: 重要なリスクと対策
+## 7. MVP範囲定義
 
-### LSP アクセスリスク
+**MVPの問い**: 「Apexクラスと SObject の繋がりを俯瞰し、メモを残せるか？」
 
-Salesforce 拡張が jorje を専有している場合の代替手段:
+### MVP に含む（Phase 0〜2 + Phase 3コア）
 
-```typescript
-// vscode.executeWorkspaceSymbolProvider を使用（パブリック API）
-const symbols = await vscode.commands.executeCommand<vscode.SymbolInformation[]>(
-  'vscode.executeWorkspaceSymbolProvider',
-  ''
-);
+- ワークスペーススキャン → 全Apexクラス・SObjectをノード表示
+- エッジ: 継承・implements・trigger-on・DML/SOQL参照（**クラスレベルのみ**）
+- クリック → 参照ノードをハイライト（opacity ディム付き）
+- ノードタイトルクリック → エディタの対象行へジャンプ
+- 付箋ノード（フリーハンドなし）
+- Dagre初期自動レイアウト・ドラッグ・位置永続化
+- テストクラス非表示トグル
 
-// textDocument/references の代替
-const refs = await vscode.commands.executeCommand<vscode.Location[]>(
-  'vscode.executeReferenceProvider',
-  uri,
-  position
-);
+**MVP想定期間: 4週間**（Phase 0, 1, 2 + Phase 3のノード描画部分）
+
+### MVP から除外（後フェーズ）
+
+- メソッドレベル展開・SOQLレベルビュー
+- フリーハンド描画
+- ノードへのアノテーションピン
+- クイック検索・詳細フィルターパネル
+- SObjectフィールドレベル詳細
+
+---
+
+## 付録: プロジェクト構成（参考）
+
+```
+codegraph/
+├── src/
+│   ├── extension/          # 拡張ホスト (Node.js)
+│   │   ├── extension.ts    # エントリポイント・アクティベーション
+│   │   ├── graph/
+│   │   │   ├── GraphBuilder.ts
+│   │   │   └── GraphStore.ts
+│   │   ├── lsp/
+│   │   │   ├── SymbolIndexer.ts
+│   │   │   └── ReferenceResolver.ts
+│   │   ├── parser/
+│   │   │   ├── ApexASTParser.ts
+│   │   │   ├── SOQLExtractor.ts
+│   │   │   └── SObjectMetaParser.ts
+│   │   └── persistence/
+│   │       ├── AnnotationStore.ts
+│   │       └── LayoutStore.ts
+│   ├── webview/            # React アプリ (Chromium)
+│   │   ├── main.tsx
+│   │   ├── store/
+│   │   │   └── graphStore.ts  # Zustand
+│   │   ├── components/
+│   │   │   ├── canvas/
+│   │   │   │   └── CodeGraphCanvas.tsx
+│   │   │   ├── nodes/
+│   │   │   │   ├── ApexClassNode.tsx
+│   │   │   │   ├── SObjectNode.tsx
+│   │   │   │   ├── ApexTriggerNode.tsx
+│   │   │   │   └── StickyNoteNode.tsx
+│   │   │   ├── controls/
+│   │   │   │   ├── GranularityToggle.tsx
+│   │   │   │   └── FilterPanel.tsx
+│   │   │   └── whiteboard/
+│   │   │       └── FreehandLayer.tsx
+│   │   └── MessageHandler.ts
+│   └── shared/
+│       └── types.ts        # 全型定義（拡張ホスト・Webview共有）
+├── .codegraph.json         # アノテーション・レイアウト永続化（git管理推奨）
+├── package.json
+├── tsconfig.json
+└── vite.config.ts
 ```
 
-### 大規模 Org 対応
+---
 
-実 Salesforce Org では 500〜2000 の Apex クラスが存在しうる。React Flow は 1000 ノード超で性能が劣化するため:
+## 付録: Namespace・マネージドパッケージの扱い
 
-- デフォルトフィルタ: `sobjectTypes: 'referenced-only'`（参照のない SObject を非表示）
-- デフォルトフィルタ: `hideTestClasses: true`
-- マネージドパッケージをノードグループとしてクラスタリング
+マネージドパッケージのApexクラスは `namespace__ClassName` 形式。
 
-### Namespace の扱い
+- `ApexClassNode.namespace` に抽出したnamespaceを格納
+- ラベル表示では namespace を省略し `ClassName` のみ表示
+- フィルターパネルの「マネージドパッケージ非表示」は `namespace` の有無で判定
+- `fullyQualifiedName` には完全名を保持し、LSP参照解決に使用
 
-マネージドパッケージクラスは `namespace__ClassName` 形式。  
-`GraphBuilder` で表示ラベルから namespace を除去しつつ、`fullyQualifiedName` に保持する。  
-将来の "マネージドパッケージ非表示" フィルタのために `namespace` フィールドを維持する。
+## 付録: 大規模Orgのパフォーマンス
+
+実際のSalesforce Orgには 500〜2000 の Apex クラスが存在しうる。React Flowは ~1000ノードで性能劣化。
+
+対策:
+1. デフォルトフィルター: `sobjectTypes: 'referenced-only'`（Apex参照のあるSObjectのみ表示）
+2. デフォルトフィルター: `hideTestClasses: true`
+3. マネージドパッケージをNamespaceでグルーピング（React Flow `<NodeGroup>`）
+4. ビューポート外ノードのカリング（React Flow `nodeExtent` + 仮想化）
