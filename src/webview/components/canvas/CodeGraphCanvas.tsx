@@ -20,7 +20,6 @@ import {
   GraphNode,
   GraphEdge,
   ApexClassNode,
-  ApexTriggerNode,
   hasLocation,
 } from '../../../shared/types';
 import { ApexClassNodeComponent } from '../nodes/ApexClassNode';

@@ -3,10 +3,6 @@ import { GraphStore } from '../graph/GraphStore';
 import { executeReferences } from './LspClient';
 import { LSPRange, hasLocation } from '../../shared/types';
 
-function lspRangeToVscode(r: LSPRange): vscode.Range {
-  return new vscode.Range(r.start.line, r.start.character, r.end.line, r.end.character);
-}
-
 export async function resolveReferences(
   nodeId: string,
   store: GraphStore
