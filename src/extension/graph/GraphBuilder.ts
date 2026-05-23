@@ -4,6 +4,7 @@ import {
   ApexClassNode,
   ApexMethodNode,
   ApexTriggerNode,
+  SObjectNode,
   GraphNode,
   GraphEdge,
   GraphSnapshot,
@@ -11,6 +12,8 @@ import {
   ViewState,
 } from '../../shared/types';
 import { buildSymbolIndex, RawClassSymbol } from '../lsp/SymbolIndexer';
+import { extractSOQL, extractDML } from '../parser/SOQLExtractor';
+import { parseSObjectDirectory } from '../parser/SObjectMetaParser';
 
 const NAMESPACE_RE = /^([A-Za-z][A-Za-z0-9]*)__(.+)$/;
 const TEST_ANNOTATION_RE = /@isTest/i;
@@ -185,6 +188,92 @@ export async function buildGraphSnapshot(
       nodes.push(classNode);
     }
   }
+
+  // Enrich methods with SOQL / DML from source
+  for (const classNode of classNodes.values()) {
+    const raw = index.classes.get(classNode.fullyQualifiedName)!;
+    const source = await readSource(raw.uri);
+    for (const method of classNode.methods) {
+      // Extract SOQL/DML from the method's source range
+      const methodLines = source.split('\n');
+      const methodSource = methodLines
+        .slice(method.range.start.line, method.range.end.line + 1)
+        .join('\n');
+      method.soqlQueries = extractSOQL(methodSource);
+      method.dmlOperations = extractDML(methodSource);
+    }
+  }
+
+  // Parse SObject metadata
+  onProgress?.('Parsing SObject metadata…', 70);
+  const sobjectNodes = await parseSObjectDirectory(workspaceRoot);
+  const sobjectIndex = new Map<string, SObjectNode>();
+  for (const so of sobjectNodes) {
+    sobjectIndex.set(so.label, so);
+    nodes.push(so);
+  }
+
+  // SObject relationship edges (Lookup / Master-Detail)
+  for (const so of sobjectNodes) {
+    for (const field of so.fields) {
+      if (field.referenceTo) {
+        for (const target of field.referenceTo) {
+          const targetId = `sobject:${target}`;
+          if (sobjectIndex.has(target)) {
+            edges.push({
+              id: `edge:field-lookup:${field.id}:${targetId}`,
+              kind: 'field-lookup',
+              sourceId: so.id,
+              targetId,
+              label: field.apiName,
+              metadata: { relationshipName: field.relationshipName },
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Apex → SObject edges from SOQL / DML
+  for (const classNode of classNodes.values()) {
+    const referencedSObjects = new Set<string>();
+    const dmlTargets = new Map<string, string>();
+
+    for (const method of classNode.methods) {
+      for (const q of method.soqlQueries) {
+        referencedSObjects.add(q.fromObject);
+        for (const extra of q.additionalObjects) referencedSObjects.add(extra);
+      }
+      for (const dml of method.dmlOperations) {
+        dmlTargets.set(dml.targetType, dml.type);
+      }
+    }
+
+    for (const sobjectName of referencedSObjects) {
+      if (sobjectIndex.has(sobjectName)) {
+        const eid = `edge:soql:${classNode.id}:sobject:${sobjectName}`;
+        if (!edges.find((e) => e.id === eid)) {
+          edges.push({ id: eid, kind: 'soql-references', sourceId: classNode.id, targetId: `sobject:${sobjectName}` });
+        }
+      }
+    }
+
+    for (const [sobjectName, dmlType] of dmlTargets) {
+      if (sobjectIndex.has(sobjectName)) {
+        const kind = dmlType === 'insert' || dmlType === 'upsert'
+          ? 'dml-insert'
+          : dmlType === 'delete' || dmlType === 'undelete'
+            ? 'dml-delete'
+            : 'dml-update';
+        const eid = `edge:dml:${classNode.id}:sobject:${sobjectName}:${kind}`;
+        if (!edges.find((e) => e.id === eid)) {
+          edges.push({ id: eid, kind, sourceId: classNode.id, targetId: `sobject:${sobjectName}` });
+        }
+      }
+    }
+  }
+
+  onProgress?.('Building edges…', 85);
 
   // Build inheritance / implements edges from source scanning
   for (const [, classNode] of classNodes) {

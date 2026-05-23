@@ -4,8 +4,12 @@
   "description": "Mind-map style visualization of Salesforce Apex classes and SObject relationships",
   "version": "0.0.1",
   "publisher": "qnaiv",
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other"],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
   "activationEvents": [
     "workspaceContains:**/*.cls",
     "workspaceContains:**/*.trigger"
@@ -31,6 +35,7 @@
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
+    "@dagrejs/dagre": "^1.1.4",
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
@@ -39,7 +44,6 @@
     "@typescript-eslint/parser": "^7.18.0",
     "@vitejs/plugin-react": "^4.3.1",
     "@xyflow/react": "^12.3.0",
-    "@dagrejs/dagre": "^1.1.4",
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^9.1.0",
     "prettier": "^3.3.3",
@@ -48,5 +52,9 @@
     "typescript": "^5.5.4",
     "vite": "^5.4.0",
     "zustand": "^4.5.5"
+  },
+  "dependencies": {
+    "@apexdevtools/apex-parser": "^5.0.0",
+    "fast-xml-parser": "^5.8.0"
   }
 }
