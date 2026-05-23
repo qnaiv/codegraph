@@ -9,6 +9,7 @@ import {
   GranularityLevel,
   LSPRange,
   XYPosition,
+  hasLocation,
 } from '../../shared/types';
 
 const defaultFilter: NodeFilter = {
@@ -27,21 +28,23 @@ const defaultViewState: ViewState = {
   layoutAlgorithm: 'dagre-lr',
 };
 
-interface Progress {
+export interface Progress {
   stage: string;
   percent: number;
 }
 
+/** nodeId → set of referencing nodeIds derived from REFERENCES_RESULT */
+type ReferenceMap = Map<string, Set<string>>;
+
 interface GraphStore {
-  // Data
   nodes: GraphNode[];
   edges: GraphEdge[];
   annotations: Annotation[];
   layoutState: Record<string, XYPosition>;
   viewState: ViewState;
   progress: Progress | null;
+  referenceMap: ReferenceMap;
 
-  // Actions
   setSnapshot: (snapshot: GraphSnapshot) => void;
   setGranularity: (level: GranularityLevel) => void;
   setSelectedNodes: (ids: string[]) => void;
@@ -59,6 +62,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   layoutState: {},
   viewState: defaultViewState,
   progress: null,
+  referenceMap: new Map(),
 
   setSnapshot(snapshot) {
     set({
@@ -68,32 +72,62 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       layoutState: snapshot.layoutState,
       viewState: snapshot.viewState,
       progress: null,
+      referenceMap: new Map(),
     });
   },
 
   setGranularity(level) {
-    set((s) => ({
-      viewState: { ...s.viewState, granularity: level },
-    }));
+    set((s) => ({ viewState: { ...s.viewState, granularity: level } }));
   },
 
   setSelectedNodes(ids) {
-    set((s) => ({
-      viewState: { ...s.viewState, selectedNodeIds: ids },
-    }));
+    set((s) => ({ viewState: { ...s.viewState, selectedNodeIds: ids } }));
   },
 
-  setReferences(_nodeId, _locations) {
-    // Phase 1: derive highlightedEdgeIds from locations and current edges
-    const { edges } = get();
-    const highlighted = edges.map((e) => e.id); // placeholder; refined in Phase 1
+  setReferences(nodeId, locations) {
+    const { edges, nodes } = get();
+
+    // Find which nodeIds appear in the reference locations
+    const refNodeIds = new Set<string>();
+    for (const loc of locations) {
+      for (const n of nodes) {
+        if (
+          hasLocation(n) &&
+          loc.start.line >= n.range.start.line &&
+          loc.end.line <= n.range.end.line
+        ) {
+          refNodeIds.add(n.id);
+        }
+      }
+    }
+
+    // Highlight edges that touch the selected node or a referencing node
+    const highlightedEdgeIds = edges
+      .filter(
+        (e) =>
+          e.sourceId === nodeId ||
+          e.targetId === nodeId ||
+          refNodeIds.has(e.sourceId) ||
+          refNodeIds.has(e.targetId)
+      )
+      .map((e) => e.id);
+
+    const newMap = new Map(get().referenceMap);
+    newMap.set(nodeId, refNodeIds);
+
     set((s) => ({
-      viewState: { ...s.viewState, highlightedEdgeIds: highlighted },
+      referenceMap: newMap,
+      viewState: {
+        ...s.viewState,
+        selectedNodeIds: [nodeId],
+        highlightedEdgeIds,
+      },
     }));
   },
 
   clearHighlight() {
     set((s) => ({
+      referenceMap: new Map(),
       viewState: {
         ...s.viewState,
         selectedNodeIds: [],
@@ -112,9 +146,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   },
 
   updateNodePosition(nodeId, pos) {
-    set((s) => ({
-      layoutState: { ...s.layoutState, [nodeId]: pos },
-    }));
+    set((s) => ({ layoutState: { ...s.layoutState, [nodeId]: pos } }));
   },
 
   setProgress(progress) {

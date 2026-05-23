@@ -2,10 +2,16 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../shared/types';
+import { GraphStore } from './graph/GraphStore';
+import { buildGraphSnapshot } from './graph/GraphBuilder';
+import { resolveReferences } from './lsp/ReferenceResolver';
+import { createFileWatcher } from './FileWatcher';
 
 export class WebviewPanelManager {
   private panel: vscode.WebviewPanel | undefined;
   private readonly context: vscode.ExtensionContext;
+  private readonly store = new GraphStore();
+  private fileWatcher: vscode.Disposable | undefined;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -40,6 +46,7 @@ export class WebviewPanelManager {
 
     this.panel.onDidDispose(() => {
       this.panel = undefined;
+      this.fileWatcher?.dispose();
     });
   }
 
@@ -48,22 +55,74 @@ export class WebviewPanelManager {
   }
 
   dispose() {
+    this.fileWatcher?.dispose();
     this.panel?.dispose();
   }
 
-  private handleMessage(msg: WebviewToExtensionMessage) {
+  private async handleMessage(msg: WebviewToExtensionMessage) {
     switch (msg.type) {
       case 'READY':
-        this.post({ type: 'PROGRESS', payload: { stage: 'Connected', percent: 0 } });
+        await this.bootstrapGraph();
         break;
+
+      case 'GET_REFERENCES': {
+        try {
+          const result = await resolveReferences(msg.payload.nodeId, this.store);
+          this.post({ type: 'REFERENCES_RESULT', payload: result });
+        } catch (e) {
+          this.post({ type: 'ERROR', payload: { message: String(e), code: 'REF_ERROR' } });
+        }
+        break;
+      }
+
       case 'OPEN_FILE': {
         const uri = vscode.Uri.parse(msg.payload.uri);
         const { start } = msg.payload.range;
         const pos = new vscode.Position(start.line, start.character);
-        vscode.window.showTextDocument(uri, { selection: new vscode.Range(pos, pos) });
+        await vscode.window.showTextDocument(uri, {
+          selection: new vscode.Range(pos, pos),
+        });
         break;
       }
+
+      case 'SAVE_LAYOUT':
+        this.store.updateLayout(msg.payload.positions);
+        break;
+
+      case 'REFRESH_GRAPH':
+        await this.bootstrapGraph();
+        break;
     }
+  }
+
+  private async bootstrapGraph() {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      this.post({
+        type: 'ERROR',
+        payload: { message: 'No workspace folder open.', code: 'NO_WORKSPACE' },
+      });
+      return;
+    }
+
+    try {
+      const snapshot = await buildGraphSnapshot(workspaceRoot, (stage, percent) => {
+        this.post({ type: 'PROGRESS', payload: { stage, percent } });
+      });
+      this.store.setSnapshot(snapshot);
+      this.post({ type: 'GRAPH_UPDATE', payload: snapshot });
+      this.setupFileWatcher(workspaceRoot);
+    } catch (e) {
+      this.post({ type: 'ERROR', payload: { message: String(e), code: 'BUILD_ERROR' } });
+    }
+  }
+
+  private setupFileWatcher(workspaceRoot: string) {
+    this.fileWatcher?.dispose();
+    this.fileWatcher = createFileWatcher(workspaceRoot, async () => {
+      // Incremental rebuild on file change
+      await this.bootstrapGraph();
+    });
   }
 
   private buildHtml(): string {
@@ -85,7 +144,7 @@ export class WebviewPanelManager {
       ? webview.asWebviewUri(vscode.Uri.joinPath(distDir, 'main.css'))
       : undefined;
 
-    const nonce = this.getNonce();
+    const nonce = getNonce();
     const csp = [
       `default-src 'none'`,
       `script-src 'nonce-${nonce}'`,
@@ -111,7 +170,6 @@ export class WebviewPanelManager {
   }
 
   private buildDevHtml(): string {
-    const nonce = this.getNonce();
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -123,7 +181,7 @@ export class WebviewPanelManager {
 </head>
 <body>
   <div id="root"></div>
-  <script nonce="${nonce}" type="module">
+  <script type="module">
     import RefreshRuntime from 'http://localhost:5173/@react-refresh';
     RefreshRuntime.injectIntoGlobalHook(window);
     window.$RefreshReg$ = () => {};
@@ -136,7 +194,6 @@ export class WebviewPanelManager {
   }
 
   private isViteDevServerRunning(): boolean {
-    // Heuristic: check if the built bundle exists. If not, assume dev server.
     const bundlePath = path.join(
       this.context.extensionUri.fsPath,
       'dist',
@@ -145,13 +202,13 @@ export class WebviewPanelManager {
     );
     return !fs.existsSync(bundlePath);
   }
+}
 
-  private getNonce(): string {
-    let text = '';
-    const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-    for (let i = 0; i < 32; i++) {
-      text += possible.charAt(Math.floor(Math.random() * possible.length));
-    }
-    return text;
+function getNonce(): string {
+  let text = '';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < 32; i++) {
+    text += chars.charAt(Math.floor(Math.random() * chars.length));
   }
+  return text;
 }

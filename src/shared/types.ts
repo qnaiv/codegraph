@@ -292,6 +292,22 @@ export type ExtensionToWebviewMessage =
   | { type: 'PROGRESS'; payload: { stage: string; percent: number } }
   | { type: 'ERROR'; payload: { message: string; code: string } };
 
+// ============================================================
+// 型ガードユーティリティ
+// ============================================================
+
+/** uri と range を持つノード（LSP操作が可能）かを判定する */
+export function hasLocation(
+  node: GraphNode
+): node is GraphNode & { uri: string; range: LSPRange } {
+  return (
+    'uri' in node &&
+    typeof (node as { uri?: unknown }).uri === 'string' &&
+    'range' in node &&
+    (node as { range?: unknown }).range != null
+  );
+}
+
 export type WebviewToExtensionMessage =
   | { type: 'READY' }
   | { type: 'GET_REFERENCES'; payload: { nodeId: string } }
