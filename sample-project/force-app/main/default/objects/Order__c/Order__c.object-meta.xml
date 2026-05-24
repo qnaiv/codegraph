@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<CustomObject xmlns="http://soap.sforce.com/2006/04/metadata">
+    <label>Order</label>
+    <pluralLabel>Orders</pluralLabel>
+    <nameField>
+        <label>Order Name</label>
+        <type>AutoNumber</type>
+        <displayFormat>ORD-{0000}</displayFormat>
+    </nameField>
+    <deploymentStatus>Deployed</deploymentStatus>
+    <sharingModel>ReadWrite</sharingModel>
+
+    <fields>
+        <fullName>Account__c</fullName>
+        <label>Account</label>
+        <type>Lookup</type>
+        <referenceTo>Account</referenceTo>
+        <relationshipName>Orders</relationshipName>
+        <relationshipLabel>Orders</relationshipLabel>
+        <required>true</required>
+    </fields>
+
+    <fields>
+        <fullName>Status__c</fullName>
+        <label>Status</label>
+        <type>Picklist</type>
+        <required>true</required>
+    </fields>
+
+    <fields>
+        <fullName>OrderDate__c</fullName>
+        <label>Order Date</label>
+        <type>Date</type>
+        <required>true</required>
+    </fields>
+
+    <fields>
+        <fullName>TotalAmount__c</fullName>
+        <label>Total Amount</label>
+        <type>Currency</type>
+        <precision>18</precision>
+        <scale>2</scale>
+    </fields>
+</CustomObject>

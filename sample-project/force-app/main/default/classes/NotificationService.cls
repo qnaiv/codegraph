@@ -1,0 +1,38 @@
+/**
+ * 通知送信サービス
+ * AccountService / OrderService から呼び出される共有ユーティリティ
+ */
+public with sharing class NotificationService extends BaseService {
+
+    public NotificationService() {
+        super('NotificationService');
+    }
+
+    @AuraEnabled
+    public static void sendOrderConfirmation(Id orderId, Id accountId) {
+        List<Contact> contacts = [
+            SELECT Id, Email, FirstName
+            FROM Contact
+            WHERE AccountId = :accountId AND IsDeleted = false
+            LIMIT 10
+        ];
+
+        for (Contact c : contacts) {
+            System.debug('Sending order confirmation to: ' + c.Email + ' for order: ' + orderId);
+        }
+    }
+
+    public static void notifyAccountUpdate(Id accountId, String changeType) {
+        System.debug('Account ' + accountId + ' changed: ' + changeType);
+    }
+
+    public static void sendBulkNotifications(List<Id> recipientIds, String subject, String body) {
+        for (Id recipientId : recipientIds) {
+            System.debug('Notifying ' + recipientId + ': ' + subject);
+        }
+    }
+
+    public override Boolean validate(SObject record) {
+        return record != null && record.Id != null;
+    }
+}

@@ -1,0 +1,214 @@
+import * as vscode from 'vscode';
+import * as path from 'path';
+import * as fs from 'fs';
+import { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../shared/types';
+import { GraphStore } from './graph/GraphStore';
+import { buildGraphSnapshot } from './graph/GraphBuilder';
+import { resolveReferences } from './lsp/ReferenceResolver';
+import { createFileWatcher } from './FileWatcher';
+
+export class WebviewPanelManager {
+  private panel: vscode.WebviewPanel | undefined;
+  private readonly context: vscode.ExtensionContext;
+  private readonly store = new GraphStore();
+  private fileWatcher: vscode.Disposable | undefined;
+
+  constructor(context: vscode.ExtensionContext) {
+    this.context = context;
+  }
+
+  open() {
+    if (this.panel) {
+      this.panel.reveal();
+      return;
+    }
+
+    this.panel = vscode.window.createWebviewPanel(
+      'codegraph',
+      'CodeGraph',
+      vscode.ViewColumn.Beside,
+      {
+        enableScripts: true,
+        retainContextWhenHidden: true,
+        localResourceRoots: [
+          vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview'),
+        ],
+      }
+    );
+
+    this.panel.webview.html = this.buildHtml();
+
+    this.panel.webview.onDidReceiveMessage(
+      (msg: WebviewToExtensionMessage) => this.handleMessage(msg),
+      undefined,
+      this.context.subscriptions
+    );
+
+    this.panel.onDidDispose(() => {
+      this.panel = undefined;
+      this.fileWatcher?.dispose();
+    });
+  }
+
+  post(message: ExtensionToWebviewMessage) {
+    this.panel?.webview.postMessage(message);
+  }
+
+  dispose() {
+    this.fileWatcher?.dispose();
+    this.panel?.dispose();
+  }
+
+  private async handleMessage(msg: WebviewToExtensionMessage) {
+    switch (msg.type) {
+      case 'READY':
+        await this.bootstrapGraph();
+        break;
+
+      case 'GET_REFERENCES': {
+        try {
+          const result = await resolveReferences(msg.payload.nodeId, this.store);
+          this.post({ type: 'REFERENCES_RESULT', payload: result });
+        } catch (e) {
+          this.post({ type: 'ERROR', payload: { message: String(e), code: 'REF_ERROR' } });
+        }
+        break;
+      }
+
+      case 'OPEN_FILE': {
+        const uri = vscode.Uri.parse(msg.payload.uri);
+        const { start } = msg.payload.range;
+        const pos = new vscode.Position(start.line, start.character);
+        await vscode.window.showTextDocument(uri, {
+          selection: new vscode.Range(pos, pos),
+        });
+        break;
+      }
+
+      case 'SAVE_LAYOUT':
+        this.store.updateLayout(msg.payload.positions);
+        break;
+
+      case 'REFRESH_GRAPH':
+        await this.bootstrapGraph();
+        break;
+    }
+  }
+
+  private async bootstrapGraph() {
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      this.post({
+        type: 'ERROR',
+        payload: { message: 'No workspace folder open.', code: 'NO_WORKSPACE' },
+      });
+      return;
+    }
+
+    try {
+      const snapshot = await buildGraphSnapshot(workspaceRoot, (stage, percent) => {
+        this.post({ type: 'PROGRESS', payload: { stage, percent } });
+      });
+      this.store.setSnapshot(snapshot);
+      this.post({ type: 'GRAPH_UPDATE', payload: snapshot });
+      this.setupFileWatcher(workspaceRoot);
+    } catch (e) {
+      this.post({ type: 'ERROR', payload: { message: String(e), code: 'BUILD_ERROR' } });
+    }
+  }
+
+  private setupFileWatcher(workspaceRoot: string) {
+    this.fileWatcher?.dispose();
+    this.fileWatcher = createFileWatcher(workspaceRoot, async () => {
+      // Incremental rebuild on file change
+      await this.bootstrapGraph();
+    });
+  }
+
+  private buildHtml(): string {
+    const webview = this.panel!.webview;
+    const distDir = vscode.Uri.joinPath(this.context.extensionUri, 'dist', 'webview');
+
+    const isDev =
+      this.context.extensionMode === vscode.ExtensionMode.Development &&
+      this.isViteDevServerRunning();
+
+    if (isDev) {
+      return this.buildDevHtml();
+    }
+
+    const jsUri = webview.asWebviewUri(vscode.Uri.joinPath(distDir, 'main.js'));
+    const cssPath = vscode.Uri.joinPath(distDir, 'main.css').fsPath;
+    const hasCss = fs.existsSync(cssPath);
+    const cssUri = hasCss
+      ? webview.asWebviewUri(vscode.Uri.joinPath(distDir, 'main.css'))
+      : undefined;
+
+    const nonce = getNonce();
+    const csp = [
+      `default-src 'none'`,
+      `script-src 'nonce-${nonce}'`,
+      `style-src ${webview.cspSource} 'unsafe-inline'`,
+      `img-src ${webview.cspSource} data:`,
+      `font-src ${webview.cspSource}`,
+    ].join('; ');
+
+    return /* html */ `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="${csp}" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  ${cssUri ? `<link rel="stylesheet" href="${cssUri}" />` : ''}
+  <title>CodeGraph</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script nonce="${nonce}" src="${jsUri}"></script>
+</body>
+</html>`;
+  }
+
+  private buildDevHtml(): string {
+    return /* html */ `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'unsafe-inline' http://localhost:5173; style-src 'unsafe-inline'; connect-src http://localhost:5173 ws://localhost:5173;" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CodeGraph (dev)</title>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module">
+    import RefreshRuntime from 'http://localhost:5173/@react-refresh';
+    RefreshRuntime.injectIntoGlobalHook(window);
+    window.$RefreshReg$ = () => {};
+    window.$RefreshSig$ = () => (type) => type;
+    window.__vite_plugin_react_preamble_installed__ = true;
+  </script>
+  <script type="module" src="http://localhost:5173/main.tsx"></script>
+</body>
+</html>`;
+  }
+
+  private isViteDevServerRunning(): boolean {
+    const bundlePath = path.join(
+      this.context.extensionUri.fsPath,
+      'dist',
+      'webview',
+      'main.js'
+    );
+    return !fs.existsSync(bundlePath);
+  }
+}
+
+function getNonce(): string {
+  let text = '';
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (let i = 0; i < 32; i++) {
+    text += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return text;
+}
