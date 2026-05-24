@@ -11,127 +11,135 @@ import {
   NodeFilter,
   ViewState,
 } from '../../shared/types';
-import { buildSymbolIndex, RawClassSymbol } from '../lsp/SymbolIndexer';
 import { extractSOQL, extractDML } from '../parser/SOQLExtractor';
 import { parseSObjectDirectory } from '../parser/SObjectMetaParser';
+import { parseApexDirectory, ParsedApexClass, ParsedApexTrigger } from '../parser/ApexSourceParser';
 
-const NAMESPACE_RE = /^([A-Za-z][A-Za-z0-9]*)__(.+)$/;
-const TEST_ANNOTATION_RE = /@isTest/i;
-const SHARING_RE = /\b(with\s+sharing|without\s+sharing|inherited\s+sharing)\b/i;
+// -----------------------------------------------------------------------
+// LSP を使って documentSymbol を補完 (任意・失敗しても続行)
+// -----------------------------------------------------------------------
+async function tryLspDocumentSymbol(uri: vscode.Uri): Promise<vscode.DocumentSymbol[]> {
+  try {
+    const result = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
+      'vscode.executeDocumentSymbolProvider',
+      uri
+    );
+    return result ?? [];
+  } catch {
+    return [];
+  }
+}
 
 function rangeToLSP(r: vscode.Range) {
   return {
     start: { line: r.start.line, character: r.start.character },
-    end: { line: r.end.line, character: r.end.character },
+    end:   { line: r.end.line,   character: r.end.character },
   };
 }
 
-function parseNamespace(name: string): { namespace?: string; localName: string } {
-  const m = NAMESPACE_RE.exec(name);
-  if (m) return { namespace: m[1], localName: m[2] };
-  return { localName: name };
-}
+// -----------------------------------------------------------------------
+// ParsedApexClass → ApexClassNode
+// -----------------------------------------------------------------------
+function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymbol[]): ApexClassNode {
+  // method 一覧: LSP シンボルがあれば優先（精度が高い）、なければ regex 結果を使用
+  const lspMethods = lspSymbols.filter(
+    (s) => s.kind === vscode.SymbolKind.Method || s.kind === vscode.SymbolKind.Constructor
+  );
 
-async function readSource(uri: vscode.Uri): Promise<string> {
-  try {
-    const bytes = await vscode.workspace.fs.readFile(uri);
-    return Buffer.from(bytes).toString('utf8');
-  } catch {
-    return '';
+  const methods: ApexMethodNode[] = lspMethods.length > 0
+    ? lspMethods.map((s) => ({
+        id: `method:${parsed.name}.${s.name}`,
+        kind: s.kind === vscode.SymbolKind.Constructor ? 'apex-constructor' : 'apex-method',
+        label: s.name,
+        parentClassId: `cls:${parsed.name}`,
+        uri: parsed.uri.toString(),
+        range: rangeToLSP(s.range),
+        returnType: '',
+        parameters: [],
+        accessModifier: 'public',
+        isStatic: false,
+        annotations: [],
+        soqlQueries: [],
+        dmlOperations: [],
+      } as ApexMethodNode))
+    : parsed.methods.map((m) => ({
+        id: `method:${parsed.name}.${m.name}`,
+        kind: m.name === parsed.name ? 'apex-constructor' : 'apex-method',
+        label: m.name,
+        parentClassId: `cls:${parsed.name}`,
+        uri: parsed.uri.toString(),
+        range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+        returnType: m.returnType,
+        parameters: [],
+        accessModifier: m.accessModifier,
+        isStatic: m.isStatic,
+        annotations: m.annotations,
+        soqlQueries: [],
+        dmlOperations: [],
+      } as ApexMethodNode));
+
+  // SOQL / DML を各メソッドに付与（ソース全体から抽出してメソッドに紐付け）
+  const allSOQL = extractSOQL(parsed.source);
+  const allDML  = extractDML(parsed.source);
+
+  // 簡易的にすべて最初のメソッドに割り当て（メソッドが存在する場合）
+  // より精密な行ベースの割り当ては Phase 追加改善で対応
+  if (methods.length > 0) {
+    const firstNonConstructor = methods.find((m) => m.kind === 'apex-method') ?? methods[0];
+    firstNonConstructor.soqlQueries = allSOQL;
+    firstNonConstructor.dmlOperations = allDML;
   }
-}
 
-function buildClassNode(raw: RawClassSymbol, source: string): ApexClassNode {
-  const { namespace, localName } = parseNamespace(raw.name);
-  const isTrigger = raw.uri.fsPath.endsWith('.trigger');
+  const lspClassSymbol = lspSymbols.find(
+    (s) => s.kind === vscode.SymbolKind.Class || s.kind === vscode.SymbolKind.Interface
+  );
 
-  const sharingMatch = SHARING_RE.exec(source);
-  const sharingMode = sharingMatch
-    ? (sharingMatch[1].toLowerCase().replace(/\s+/g, ' ') as ApexClassNode['sharingMode'])
-    : undefined;
+  const range = lspClassSymbol
+    ? rangeToLSP(lspClassSymbol.range)
+    : { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } };
+
+  // namespace 抽出 (managedNs__ClassName 形式)
+  const nsMatch = /^([A-Za-z][A-Za-z0-9]*)__(.+)$/.exec(parsed.name);
+  const namespace = nsMatch?.[1];
+  const localName  = nsMatch?.[2] ?? parsed.name;
 
   return {
-    id: `cls:${raw.name}`,
-    kind: raw.kind === vscode.SymbolKind.Interface
-      ? 'apex-interface'
-      : raw.kind === vscode.SymbolKind.Enum
-        ? 'apex-enum'
-        : 'apex-class',
+    id: `cls:${parsed.name}`,
+    kind: parsed.kind,
     label: localName,
-    fullyQualifiedName: raw.name,
-    uri: raw.uri.toString(),
-    range: rangeToLSP(raw.range),
+    fullyQualifiedName: parsed.name,
+    uri: parsed.uri.toString(),
+    range,
     namespace,
-    isAbstract: /\babstract\b/i.test(source),
-    isVirtual: /\bvirtual\b/i.test(source),
-    accessModifier: /\bglobal\b/i.test(source)
-      ? 'global'
-      : /\bprivate\b/i.test(source)
-        ? 'private'
-        : 'public',
-    annotations: [],
-    methods: [],
+    isAbstract: parsed.isAbstract,
+    isVirtual:  parsed.isVirtual,
+    accessModifier: parsed.accessModifier,
+    annotations: parsed.annotations,
+    methods,
     innerClasses: [],
-    isTestClass: TEST_ANNOTATION_RE.test(source) || isTrigger === false && /\btestmethod\b/i.test(source),
-    sharingMode,
+    isTestClass: parsed.isTestClass,
+    sharingMode: parsed.sharingMode,
   };
 }
 
-function buildMethodNode(
-  methodName: string,
-  sym: vscode.DocumentSymbol,
-  parentClassId: string,
-  uri: vscode.Uri
-): ApexMethodNode {
+// -----------------------------------------------------------------------
+// ParsedApexTrigger → ApexTriggerNode
+// -----------------------------------------------------------------------
+function buildTriggerNode(parsed: ParsedApexTrigger): ApexTriggerNode {
   return {
-    id: `method:${parentClassId.replace('cls:', '')}.${methodName}`,
-    kind: sym.kind === vscode.SymbolKind.Constructor ? 'apex-constructor' : 'apex-method',
-    label: methodName,
-    parentClassId,
-    uri: uri.toString(),
-    range: rangeToLSP(sym.range),
-    returnType: '',
-    parameters: [],
-    accessModifier: 'public',
-    isStatic: false,
-    annotations: [],
-    soqlQueries: [],
-    dmlOperations: [],
-  };
-}
-
-function buildTriggerNode(raw: RawClassSymbol, source: string): ApexTriggerNode {
-  const triggerHeader = /trigger\s+\w+\s+on\s+(\w+)\s*\(([^)]+)\)/i.exec(source);
-  const targetSObject = triggerHeader?.[1] ?? 'Unknown';
-
-  type TriggerEvent = ApexTriggerNode['events'][number];
-  const eventMap: Record<string, TriggerEvent> = {
-    'before insert': 'before insert',
-    'before update': 'before update',
-    'before delete': 'before delete',
-    'after insert': 'after insert',
-    'after update': 'after update',
-    'after delete': 'after delete',
-    'after undelete': 'after undelete',
-  };
-  const eventsRaw = triggerHeader?.[2] ?? '';
-  const events: TriggerEvent[] = eventsRaw
-    .split(',')
-    .map((e) => e.trim().toLowerCase())
-    .filter((e): e is TriggerEvent => e in eventMap)
-    .map((e) => eventMap[e]);
-
-  return {
-    id: `trigger:${raw.name}`,
+    id: `trigger:${parsed.name}`,
     kind: 'apex-trigger',
-    label: raw.name,
-    uri: raw.uri.toString(),
-    range: rangeToLSP(raw.range),
-    targetSObject,
-    events,
+    label: parsed.name,
+    uri: parsed.uri.toString(),
+    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+    targetSObject: parsed.targetSObject,
+    events: parsed.events,
   };
 }
 
+// -----------------------------------------------------------------------
+// デフォルト状態
+// -----------------------------------------------------------------------
 const defaultFilter: NodeFilter = {
   hideTestClasses: true,
   hideManagedPackages: true,
@@ -148,64 +156,82 @@ const defaultViewState: ViewState = {
   layoutAlgorithm: 'dagre-lr',
 };
 
+// -----------------------------------------------------------------------
+// メインエントリ
+// -----------------------------------------------------------------------
 export async function buildGraphSnapshot(
   workspaceRoot: string,
   onProgress?: (stage: string, percent: number) => void
 ): Promise<GraphSnapshot> {
-  onProgress?.('Indexing symbols…', 0);
 
-  const index = await buildSymbolIndex(workspaceRoot, (done, total) => {
-    onProgress?.('Indexing symbols…', Math.round((done / total) * 60));
-  });
+  onProgress?.('Apex ソースを解析中…', 5);
 
-  onProgress?.('Building nodes…', 60);
+  // 1. regex ベースで Apex ファイルを解析（LSP 不要・常に動作）
+  const { classes: parsedClasses, triggers: parsedTriggers } = await parseApexDirectory(workspaceRoot);
+
+  onProgress?.('LSP シンボルを補完中…', 40);
 
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
   const classNodes = new Map<string, ApexClassNode>();
-  const triggerNodes: ApexTriggerNode[] = [];
 
-  for (const [name, raw] of index.classes) {
-    const source = await readSource(raw.uri);
-    const isTrigger = raw.uri.fsPath.endsWith('.trigger');
+  // 2. クラスノードを構築（LSP で補完できれば精度向上）
+  const classEntries = [...parsedClasses.entries()];
+  await Promise.all(
+    classEntries.map(async ([, parsed], i) => {
+      // LSP の documentSymbol でメソッド階層を補完（失敗しても続行）
+      const lspSymbols = await tryLspDocumentSymbol(parsed.uri);
 
-    if (isTrigger) {
-      const trigger = buildTriggerNode(raw, source);
-      triggerNodes.push(trigger);
-      nodes.push(trigger);
-    } else {
-      const classNode = buildClassNode(raw, source);
+      const classNode = buildClassNode(parsed, lspSymbols);
+      classNodes.set(parsed.name, classNode);
 
-      // Attach methods
-      for (const [key, { symbol }] of index.methods) {
-        if (key.startsWith(`${name}.`)) {
-          const methodName = key.slice(name.length + 1);
-          classNode.methods.push(buildMethodNode(methodName, symbol, classNode.id, raw.uri));
-        }
+      if (i % 5 === 0) {
+        onProgress?.('クラスノードを構築中…', 40 + Math.round((i / classEntries.length) * 20));
       }
+    })
+  );
 
-      classNodes.set(name, classNode);
-      nodes.push(classNode);
+  // class名の重複を除去して追加
+  for (const node of classNodes.values()) {
+    nodes.push(node);
+  }
+
+  // 3. トリガーノードを構築
+  for (const parsed of parsedTriggers) {
+    nodes.push(buildTriggerNode(parsed));
+  }
+
+  onProgress?.('継承・実装エッジを構築中…', 65);
+
+  // 4. 継承・実装エッジ（regex パーサーから）
+  for (const [, parsed] of parsedClasses) {
+    const classNode = classNodes.get(parsed.name);
+    if (!classNode) continue;
+
+    if (parsed.extendsClass && classNodes.has(parsed.extendsClass)) {
+      edges.push({
+        id: `edge:inherits:${classNode.id}:cls:${parsed.extendsClass}`,
+        kind: 'inherits',
+        sourceId: classNode.id,
+        targetId: `cls:${parsed.extendsClass}`,
+      });
+    }
+
+    for (const iface of parsed.implementsInterfaces) {
+      if (classNodes.has(iface)) {
+        edges.push({
+          id: `edge:implements:${classNode.id}:cls:${iface}`,
+          kind: 'implements',
+          sourceId: classNode.id,
+          targetId: `cls:${iface}`,
+        });
+      }
     }
   }
 
-  // Enrich methods with SOQL / DML from source
-  for (const classNode of classNodes.values()) {
-    const raw = index.classes.get(classNode.fullyQualifiedName)!;
-    const source = await readSource(raw.uri);
-    for (const method of classNode.methods) {
-      // Extract SOQL/DML from the method's source range
-      const methodLines = source.split('\n');
-      const methodSource = methodLines
-        .slice(method.range.start.line, method.range.end.line + 1)
-        .join('\n');
-      method.soqlQueries = extractSOQL(methodSource);
-      method.dmlOperations = extractDML(methodSource);
-    }
-  }
+  onProgress?.('SObject メタデータを解析中…', 70);
 
-  // Parse SObject metadata
-  onProgress?.('Parsing SObject metadata…', 70);
+  // 5. SObject ノード
   const sobjectNodes = await parseSObjectDirectory(workspaceRoot);
   const sobjectIndex = new Map<string, SObjectNode>();
   for (const so of sobjectNodes) {
@@ -213,7 +239,7 @@ export async function buildGraphSnapshot(
     nodes.push(so);
   }
 
-  // SObject relationship edges (Lookup / Master-Detail)
+  // 6. SObject リレーションシップエッジ
   for (const so of sobjectNodes) {
     for (const field of so.fields) {
       if (field.referenceTo) {
@@ -234,10 +260,17 @@ export async function buildGraphSnapshot(
     }
   }
 
-  // Apex → SObject edges from SOQL / DML
+  onProgress?.('Apex → SObject エッジを構築中…', 85);
+
+  // 7. Apex → SObject エッジ（SOQL / DML）
+  const edgeSet = new Set<string>();
+  const addEdge = (edge: GraphEdge) => {
+    if (!edgeSet.has(edge.id)) { edgeSet.add(edge.id); edges.push(edge); }
+  };
+
   for (const classNode of classNodes.values()) {
     const referencedSObjects = new Set<string>();
-    const dmlTargets = new Map<string, string>();
+    const dmlByObject = new Map<string, string>();
 
     for (const method of classNode.methods) {
       for (const q of method.soqlQueries) {
@@ -245,89 +278,52 @@ export async function buildGraphSnapshot(
         for (const extra of q.additionalObjects) referencedSObjects.add(extra);
       }
       for (const dml of method.dmlOperations) {
-        dmlTargets.set(dml.targetType, dml.type);
+        dmlByObject.set(dml.targetType, dml.type);
       }
     }
 
-    for (const sobjectName of referencedSObjects) {
-      if (sobjectIndex.has(sobjectName)) {
-        const eid = `edge:soql:${classNode.id}:sobject:${sobjectName}`;
-        if (!edges.find((e) => e.id === eid)) {
-          edges.push({ id: eid, kind: 'soql-references', sourceId: classNode.id, targetId: `sobject:${sobjectName}` });
-        }
-      }
-    }
-
-    for (const [sobjectName, dmlType] of dmlTargets) {
-      if (sobjectIndex.has(sobjectName)) {
-        const kind = dmlType === 'insert' || dmlType === 'upsert'
-          ? 'dml-insert'
-          : dmlType === 'delete' || dmlType === 'undelete'
-            ? 'dml-delete'
-            : 'dml-update';
-        const eid = `edge:dml:${classNode.id}:sobject:${sobjectName}:${kind}`;
-        if (!edges.find((e) => e.id === eid)) {
-          edges.push({ id: eid, kind, sourceId: classNode.id, targetId: `sobject:${sobjectName}` });
-        }
-      }
-    }
-  }
-
-  onProgress?.('Building edges…', 85);
-
-  // Build inheritance / implements edges from source scanning
-  for (const [, classNode] of classNodes) {
-    const raw = index.classes.get(classNode.fullyQualifiedName)!;
-    const source = await readSource(raw.uri);
-
-    const extendsMatch = /\bextends\s+(\w+)/i.exec(source);
-    if (extendsMatch) {
-      const parentName = extendsMatch[1];
-      const parentId = `cls:${parentName}`;
-      if (classNodes.has(parentName)) {
-        edges.push({
-          id: `edge:inherits:${classNode.id}:${parentId}`,
-          kind: 'inherits',
+    for (const name of referencedSObjects) {
+      if (sobjectIndex.has(name)) {
+        addEdge({
+          id: `edge:soql:${classNode.id}:sobject:${name}`,
+          kind: 'soql-references',
           sourceId: classNode.id,
-          targetId: parentId,
+          targetId: `sobject:${name}`,
         });
       }
     }
 
-    const implementsMatch = /\bimplements\s+([\w,\s]+?)(?:\s*\{|$)/i.exec(source);
-    if (implementsMatch) {
-      for (const iface of implementsMatch[1].split(',')) {
-        const ifaceName = iface.trim();
-        const ifaceId = `cls:${ifaceName}`;
-        if (classNodes.has(ifaceName)) {
-          edges.push({
-            id: `edge:implements:${classNode.id}:${ifaceId}`,
-            kind: 'implements',
-            sourceId: classNode.id,
-            targetId: ifaceId,
-          });
-        }
+    for (const [name, dmlType] of dmlByObject) {
+      if (sobjectIndex.has(name)) {
+        const kind = dmlType === 'insert' || dmlType === 'upsert' ? 'dml-insert'
+          : dmlType === 'delete' || dmlType === 'undelete'        ? 'dml-delete'
+          : 'dml-update';
+        addEdge({
+          id: `edge:dml:${classNode.id}:sobject:${name}:${kind}`,
+          kind,
+          sourceId: classNode.id,
+          targetId: `sobject:${name}`,
+        });
       }
     }
   }
 
-  // trigger-on edges
-  for (const trigger of triggerNodes) {
+  // 8. trigger-on エッジ
+  for (const trigger of parsedTriggers) {
     const sobjectId = `sobject:${trigger.targetSObject}`;
-    edges.push({
-      id: `edge:trigger-on:${trigger.id}:${sobjectId}`,
+    addEdge({
+      id: `edge:trigger-on:trigger:${trigger.name}:${sobjectId}`,
       kind: 'trigger-on',
-      sourceId: trigger.id,
+      sourceId: `trigger:${trigger.name}`,
       targetId: sobjectId,
     });
   }
 
-  onProgress?.('Done', 100);
+  onProgress?.('完了', 100);
 
-  const baseName = path.basename(workspaceRoot);
   return {
     version: 1,
-    projectRoot: baseName,
+    projectRoot: path.basename(workspaceRoot),
     nodes,
     edges,
     annotations: [],
