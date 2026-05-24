@@ -171,6 +171,71 @@ export function parseClassRefs(source: string): ParsedClassRef[] {
   return refs;
 }
 
+export interface CrossClassCall {
+  targetClass: string;
+  targetMethod: string;
+}
+
+export interface MethodCallsResult {
+  methodName: string;
+  crossClassCalls: CrossClassCall[];
+  intraClassCalls: string[];
+}
+
+/**
+ * Apex ソース内の各メソッドが呼び出しているメソッドを解析する。
+ * - crossClassCalls: ClassName.methodName( パターン（静的・インスタンス変数経由）
+ * - intraClassCalls: 同一クラス内のメソッド呼び出し（ownMethodNames と照合）
+ */
+export function extractMethodCalls(
+  source: string,
+  ownMethodNames: ReadonlySet<string>,
+): MethodCallsResult[] {
+  const results: MethodCallsResult[] = [];
+  const re = new RegExp(METHOD_RE.source, 'gm');
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(source)) !== null) {
+    const name = m[4];
+    if (/^(class|interface|enum|trigger|if|for|while|catch|return|new|this|super)$/i.test(name)) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+
+    if (m[0].trimEnd().endsWith(';')) continue; // abstract / interface method
+
+    const bodyStart = m.index + m[0].length;
+    let depth = 1;
+    let i = bodyStart;
+    while (i < source.length && depth > 0) {
+      if (source[i] === '{') depth++;
+      else if (source[i] === '}') depth--;
+      i++;
+    }
+    const body = source.slice(bodyStart, i - 1);
+
+    const crossClassCalls: CrossClassCall[] = [];
+    const crossRe = /\b([A-Z]\w*)\.([a-z_]\w*)\s*\(/g;
+    let cc: RegExpExecArray | null;
+    while ((cc = crossRe.exec(body)) !== null) {
+      crossClassCalls.push({ targetClass: cc[1], targetMethod: cc[2] });
+    }
+
+    const intraClassCalls: string[] = [];
+    for (const mn of ownMethodNames) {
+      if (mn === name) continue;
+      const esc = mn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (new RegExp(`\\b${esc}\\s*\\(`).test(body)) {
+        intraClassCalls.push(mn);
+      }
+    }
+
+    results.push({ methodName: name, crossClassCalls, intraClassCalls });
+  }
+
+  return results;
+}
+
 export function parseApexClassHeader(source: string): ParsedClassHeader | null {
   const headerMatch = CLASS_HEADER_RE.exec(source);
   if (!headerMatch) return null;

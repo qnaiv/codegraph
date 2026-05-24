@@ -30,11 +30,13 @@ export function applyDagreLayout(
   return nodes.map((node) => {
     const pos = g.node(node.id);
     if (!pos) return node;
+    const w = typeof node.style?.width === 'number' ? node.style.width : NODE_WIDTH;
+    const h = typeof node.style?.height === 'number' ? node.style.height : NODE_HEIGHT;
     return {
       ...node,
       position: {
-        x: pos.x - NODE_WIDTH / 2,
-        y: pos.y - NODE_HEIGHT / 2,
+        x: pos.x - w / 2,
+        y: pos.y - h / 2,
       },
     };
   });

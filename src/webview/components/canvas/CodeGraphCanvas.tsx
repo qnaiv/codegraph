@@ -185,10 +185,51 @@ export function CodeGraphCanvas() {
   }), [gNodes, activeFilters]);
 
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
-  const filteredEdges = useMemo(
-    () => gEdges.filter((e) => filteredNodeIds.has(e.sourceId) && filteredNodeIds.has(e.targetId)),
-    [gEdges, filteredNodeIds]
-  );
+  // メソッドレベル表示時に可視メソッドの ID セットを構築
+  const visibleMethodIds = useMemo(() => {
+    if (!showMethodLevel) return null;
+    const ids = new Set<string>();
+    for (const n of filteredNodes) {
+      if (isApexClass(n)) {
+        for (const m of n.methods) {
+          if (m.accessModifier !== 'private') ids.add(m.id);
+        }
+      }
+    }
+    return ids;
+  }, [showMethodLevel, filteredNodes]);
+
+  const filteredEdges = useMemo(() => {
+    if (showMethodLevel && visibleMethodIds) {
+      return gEdges.filter((e) => {
+        const srcIsMethod = e.sourceId.startsWith('method:');
+        const tgtIsMethod = e.targetId.startsWith('method:');
+        if (srcIsMethod || tgtIsMethod) {
+          // メソッドレベルエッジ: 可視メソッド間のみ
+          const srcOk = srcIsMethod ? visibleMethodIds.has(e.sourceId) : filteredNodeIds.has(e.sourceId);
+          const tgtOk = tgtIsMethod ? visibleMethodIds.has(e.targetId) : filteredNodeIds.has(e.targetId);
+          return srcOk && tgtOk;
+        }
+        // クラスレベルの calls/instantiates/soql/dml はメソッドレベルで置換するため非表示
+        if (
+          e.kind === 'calls' || e.kind === 'instantiates' ||
+          e.kind === 'soql-references' || e.kind.startsWith('dml-')
+        ) {
+          return false;
+        }
+        // inherits / implements / trigger-on / field-lookup はそのまま表示
+        return filteredNodeIds.has(e.sourceId) && filteredNodeIds.has(e.targetId);
+      });
+    }
+    // クラスレベル表示: メソッドレベルエッジを除外
+    return gEdges.filter(
+      (e) =>
+        !e.sourceId.startsWith('method:') &&
+        !e.targetId.startsWith('method:') &&
+        filteredNodeIds.has(e.sourceId) &&
+        filteredNodeIds.has(e.targetId),
+    );
+  }, [gEdges, filteredNodeIds, showMethodLevel, visibleMethodIds]);
 
   // -----------------------------------------------------------------------
   // Build RF nodes: method-level containers OR flat class nodes
@@ -202,7 +243,8 @@ export function CodeGraphCanvas() {
         const pos = layoutState[n.id] ?? { x: 0, y: 0 };
 
         if (isApexClass(n)) {
-          const { width, height } = containerSize(n.methods.length);
+          const publicMethods = n.methods.filter(m => m.accessModifier !== 'private');
+          const { width, height } = containerSize(publicMethods.length);
           containerNodes.push({
             id: n.id,
             type: 'apexClass',
@@ -210,7 +252,7 @@ export function CodeGraphCanvas() {
             style: { width, height },
             data: { graphNode: n, isContainer: true },
           });
-          n.methods.forEach((method, i) => {
+          publicMethods.forEach((method, i) => {
             methodNodes.push({
               id: method.id,
               type: 'apexMethod',
@@ -237,9 +279,16 @@ export function CodeGraphCanvas() {
 
       // Dagre on container nodes only (method children are positioned inside)
       const needsLayout = !containerNodes.some((cn) => layoutState[cn.id]);
-      const rfEdgesForLayout: Edge[] = filteredEdges.map((e) => ({
-        id: e.id, source: e.sourceId, target: e.targetId,
-      }));
+      const containerIdSet = new Set(containerNodes.map(cn => cn.id));
+      // レイアウト用エッジはコンテナ間のクラスレベルエッジのみ使用
+      const rfEdgesForLayout: Edge[] = gEdges
+        .filter(e =>
+          !e.sourceId.startsWith('method:') &&
+          !e.targetId.startsWith('method:') &&
+          containerIdSet.has(e.sourceId) &&
+          containerIdSet.has(e.targetId),
+        )
+        .map((e) => ({ id: e.id, source: e.sourceId, target: e.targetId }));
       const laid = needsLayout
         ? applyDagreLayout(containerNodes, rfEdgesForLayout, 'LR')
         : containerNodes;
@@ -259,7 +308,7 @@ export function CodeGraphCanvas() {
       id: e.id, source: e.sourceId, target: e.targetId,
     }));
     return needsLayout ? applyDagreLayout(withPos, rfEdgesForLayout, 'LR') : withPos;
-  }, [filteredNodes, filteredEdges, layoutState, showMethodLevel]);
+  }, [filteredNodes, filteredEdges, gEdges, layoutState, showMethodLevel]);
 
   // Merge highlight / dim state onto top-level nodes; pass through method child nodes as-is
   const rfNodes: Node[] = useMemo(() =>
