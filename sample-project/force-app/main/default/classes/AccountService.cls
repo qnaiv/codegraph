@@ -1,14 +1,16 @@
 /**
  * Account に関するビジネスロジック
- * SOQL・DML・ContactService との連携を含む
+ * SOQL・DML・ContactService / NotificationService との連携を含む
  */
 public with sharing class AccountService extends BaseService {
 
     private ContactService contactService;
+    private NotificationService notificationService;
 
     public AccountService() {
         super('AccountService');
         this.contactService = new ContactService();
+        this.notificationService = new NotificationService();
     }
 
     @AuraEnabled(cacheable=true)
@@ -17,7 +19,7 @@ public with sharing class AccountService extends BaseService {
             SELECT Id, Name, Industry, AnnualRevenue, OwnerId
             FROM Account
             WHERE IsDeleted = false
-              AND Industry = :industry
+              AND (Industry = :industry OR :industry = null)
             ORDER BY Name
             LIMIT 200
         ];
@@ -44,6 +46,7 @@ public with sharing class AccountService extends BaseService {
         }
         if (!toUpdate.isEmpty()) {
             update toUpdate;
+            NotificationService.notifyAccountUpdate(toUpdate[0].Id, 'AnnualRevenue updated');
         }
     }
 

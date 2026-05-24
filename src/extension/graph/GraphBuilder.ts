@@ -229,6 +229,35 @@ export async function buildGraphSnapshot(
     }
   }
 
+  onProgress?.('Apexクラス間の参照エッジを構築中…', 67);
+
+  // 4.5. Apex → Apex calls / instantiates エッジ
+  // parsedClasses から抽出した参照候補をクラス名セットで絞り込む
+  const apexEdgeSet = new Set<string>();
+  const addApexEdge = (edge: GraphEdge) => {
+    if (!apexEdgeSet.has(edge.id)) { apexEdgeSet.add(edge.id); edges.push(edge); }
+  };
+
+  for (const [, parsed] of parsedClasses) {
+    const sourceNode = classNodes.get(parsed.name);
+    if (!sourceNode) continue;
+
+    for (const ref of parsed.referencedClasses) {
+      // 自己参照・未知クラス・継承/実装済みの関係は除外
+      if (ref.targetClass === parsed.name) continue;
+      if (!classNodes.has(ref.targetClass)) continue;
+      if (parsed.extendsClass === ref.targetClass) continue;
+      if (parsed.implementsInterfaces.includes(ref.targetClass)) continue;
+
+      addApexEdge({
+        id: `edge:${ref.kind}:${sourceNode.id}:cls:${ref.targetClass}`,
+        kind: ref.kind,
+        sourceId: sourceNode.id,
+        targetId: `cls:${ref.targetClass}`,
+      });
+    }
+  }
+
   onProgress?.('SObject メタデータを解析中…', 70);
 
   // 5. SObject ノード

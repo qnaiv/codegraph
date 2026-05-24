@@ -14,6 +14,7 @@ export interface ParsedApexClass {
   implementsInterfaces: string[];
   annotations: ApexAnnotation[];
   methods: ParsedApexMethod[];
+  referencedClasses: ParsedClassRef[];
   uri: vscode.Uri;
   source: string;
 }
@@ -34,6 +35,11 @@ export interface ParsedApexMethod {
   annotations: ApexAnnotation[];
 }
 
+export interface ParsedClassRef {
+  targetClass: string;
+  kind: 'instantiates' | 'calls';
+}
+
 // -----------------------------------------------------------------------
 // Apex class / interface / enum ヘッダー抽出
 // -----------------------------------------------------------------------
@@ -46,6 +52,12 @@ const IMPLEMENTS_RE = /\bimplements\s+([\w\s,]+?)(?:\s*(?:extends|{|$))/i;
 const TRIGGER_RE = /\btrigger\s+(\w+)\s+on\s+(\w+)\s*\(([^)]+)\)/i;
 const METHOD_RE =
   /^\s*(?:@\w+(?:\s*\([^)]*\))?\s*)*(global|public|private|protected|webservice)?\s+(static\s+)?((?:[\w<>[\]]+\s+)+)(\w+)\s*\([^)]*\)\s*(?:\{|;)/gm;
+
+// クラス間参照検出
+const NEW_CLASS_RE = /\bnew\s+([A-Z]\w*)\s*[(<]/g;
+const STATIC_CALL_RE = /\b([A-Z]\w*)\.(?:[a-z_]\w*)\s*\(/g;
+// フィールド・ローカル変数型宣言: TypeName varName (= ; { , [)
+const TYPE_DECL_RE = /\b([A-Z]\w*)\s+([a-z_]\w*)\s*(?:=|;|\{|,|\[)/g;
 
 const EVENT_MAP: Record<string, TriggerEvent> = {
   'before insert': 'before insert',
@@ -94,6 +106,56 @@ function parseMethods(source: string): ParsedApexMethod[] {
     });
   }
   return methods;
+}
+
+// ソースからクラス間参照を抽出する
+// - new ClassName( → instantiates
+// - ClassName.method( (静的呼び出し) → calls
+// - TypeName varName 宣言 + varName.method( → calls
+// GraphBuilder 側でクラス名セットと照合して絞り込む
+function parseClassRefs(source: string): ParsedClassRef[] {
+  const instantiates = new Set<string>();
+  const calls = new Set<string>();
+  let m: RegExpExecArray | null;
+
+  // new ClassName( or new ClassName<
+  NEW_CLASS_RE.lastIndex = 0;
+  while ((m = NEW_CLASS_RE.exec(source)) !== null) {
+    instantiates.add(m[1]);
+  }
+
+  // ClassName.method( — 静的メソッド呼び出し
+  STATIC_CALL_RE.lastIndex = 0;
+  while ((m = STATIC_CALL_RE.exec(source)) !== null) {
+    calls.add(m[1]);
+  }
+
+  // フィールド/ローカル変数宣言からインスタンス呼び出しを検出
+  // TypeName varName → varName.method( のパターン
+  const typeVarMap = new Map<string, string>(); // varName → TypeName
+  TYPE_DECL_RE.lastIndex = 0;
+  while ((m = TYPE_DECL_RE.exec(source)) !== null) {
+    typeVarMap.set(m[2], m[1]);
+  }
+  for (const [varName, typeName] of typeVarMap) {
+    // varName.lowercase_method( がソース中に存在すれば参照あり
+    const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    if (new RegExp(`\\b${escaped}\\.(?:[a-z_]\\w*)\\s*\\(`).test(source)) {
+      calls.add(typeName);
+    }
+  }
+
+  const refs: ParsedClassRef[] = [];
+  for (const cls of instantiates) {
+    refs.push({ targetClass: cls, kind: 'instantiates' });
+  }
+  // instantiates と重複しない calls のみ追加
+  for (const cls of calls) {
+    if (!instantiates.has(cls)) {
+      refs.push({ targetClass: cls, kind: 'calls' });
+    }
+  }
+  return refs;
 }
 
 export function parseApexSource(uri: vscode.Uri, source: string): ParsedApexClass | ParsedApexTrigger | null {
@@ -152,6 +214,7 @@ export function parseApexSource(uri: vscode.Uri, source: string): ParsedApexClas
       : [],
     annotations,
     methods: parseMethods(source),
+    referencedClasses: parseClassRefs(source),
     uri,
     source,
   };
