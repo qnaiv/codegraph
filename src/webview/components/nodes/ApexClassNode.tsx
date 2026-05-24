@@ -9,6 +9,8 @@ interface ApexClassNodeProps extends NodeProps {
     isDimmed?: boolean;
     onOpenFile?: () => void;
     isContainer?: boolean;
+    onExpandDownstream?: () => void;
+    onCollapseDownstream?: () => void;
   };
 }
 
@@ -30,18 +32,21 @@ const ANNOTATION_ICONS: Record<string, string> = {
 export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
   data,
 }: ApexClassNodeProps) {
-  const { graphNode: node, isDimmed, onOpenFile, isContainer } = data;
+  const { graphNode: node, isDimmed, onOpenFile, isContainer, onExpandDownstream, onCollapseDownstream } = data;
+
+  const soqlCount = node.methods.reduce((n, m) => n + m.soqlQueries.length, 0);
+  const dmlCount = node.methods.reduce((n, m) => n + m.dmlOperations.length, 0);
+
+  const annotationIcons = node.annotations
+    .map((a) => ANNOTATION_ICONS[a.name])
+    .filter(Boolean)
+    .join(' ');
 
   const borderColor = node.kind === 'apex-interface'
     ? '#7ec8e3'
     : node.kind === 'apex-enum'
       ? '#a8d8a8'
       : '#4a90d9';
-
-  const annotationIcons = node.annotations
-    .map((a) => ANNOTATION_ICONS[a.name])
-    .filter(Boolean)
-    .join(' ');
 
   if (isContainer) {
     return (
@@ -71,13 +76,13 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
                 {KIND_ICON[node.kind]}
               </span>
               <span
-                onClick={onOpenFile}
-                title="クリックでファイルを開く"
+                onDoubleClick={onOpenFile}
+                title="ダブルクリックでファイルを開く"
                 style={{
                   color: '#cce4f7',
                   fontSize: 12,
                   fontWeight: 700,
-                  cursor: 'pointer',
+                  cursor: 'default',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
@@ -103,14 +108,12 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
   }
 
   // Normal (class-level) mode
-  const soqlCount = node.methods.reduce((n, m) => n + m.soqlQueries.length, 0);
-  const dmlCount  = node.methods.reduce((n, m) => n + m.dmlOperations.length, 0);
-
   return (
     <>
       <Handle type="target" position={Position.Top} style={{ background: borderColor }} />
       <div
         style={{
+          position: 'relative',
           background: '#1a2f4a',
           border: `1.5px solid ${borderColor}`,
           borderRadius: 8,
@@ -126,13 +129,10 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
             {KIND_ICON[node.kind]}
           </span>
           <span
-            onClick={onOpenFile}
-            title="ダブルクリックでファイルを開く"
             style={{
               color: '#cce4f7',
               fontSize: 12,
               fontWeight: 600,
-              cursor: 'pointer',
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
@@ -158,11 +158,82 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
             <Badge color="#9d4a9d" text="global" />
           )}
         </div>
+
+        {/* +/- buttons: float just below the card, outside it, near the source handle */}
+        {(onExpandDownstream || onCollapseDownstream) && (
+          <ExpandCollapseButtons
+            color={borderColor}
+            onExpand={onExpandDownstream}
+            onCollapse={onCollapseDownstream}
+          />
+        )}
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: borderColor }} />
     </>
   );
 });
+
+function ExpandCollapseButtons({
+  color,
+  onExpand,
+  onCollapse,
+}: {
+  color: string;
+  onExpand?: () => void;
+  onCollapse?: () => void;
+}) {
+  return (
+    <div style={{
+      position: 'absolute',
+      top: '100%',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      paddingTop: 3,
+      display: 'flex',
+      gap: 4,
+      zIndex: 10,
+    }}>
+      {onExpand && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onExpand(); }}
+          title="下位ノードを1ホップ展開"
+          style={{
+            background: '#0a0c14',
+            border: `1px solid ${color}88`,
+            color,
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '0px 6px',
+            borderRadius: 3,
+            cursor: 'pointer',
+            lineHeight: 1.6,
+          }}
+        >
+          +
+        </button>
+      )}
+      {onCollapse && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCollapse(); }}
+          title="下位ノードを折りたたむ"
+          style={{
+            background: '#0a0c14',
+            border: '1px solid #cc444488',
+            color: '#cc6666',
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '0px 6px',
+            borderRadius: 3,
+            cursor: 'pointer',
+            lineHeight: 1.6,
+          }}
+        >
+          −
+        </button>
+      )}
+    </div>
+  );
+}
 
 function Badge({ color, text }: { color: string; text: string }) {
   return (
