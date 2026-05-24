@@ -65,7 +65,9 @@ function toRFNode(
   isSelected: boolean,
   isReferenced: boolean,
   isAnySelected: boolean,
-  onOpenFile: () => void
+  onOpenFile: () => void,
+  onExpandDownstream: (() => void) | undefined,
+  onCollapseDownstream: (() => void) | undefined,
 ): Node {
   const isDimmed = isAnySelected && !isSelected && !isReferenced;
   const isHighlighted = isSelected || isReferenced;
@@ -79,6 +81,8 @@ function toRFNode(
       isDimmed,
       isHighlighted,
       onOpenFile,
+      onExpandDownstream,
+      onCollapseDownstream,
     },
     style: isHighlighted
       ? { boxShadow: `0 0 0 2px ${isSelected ? '#ff8c00' : '#ffd700'}`, borderRadius: 8 }
@@ -145,22 +149,41 @@ function FilterToggle({ label, active, onToggle }: { label: string; active: bool
 // Main canvas
 // -----------------------------------------------------------------------
 export function CodeGraphCanvas() {
-  const { nodes: gNodes, edges: gEdges, layoutState, viewState, progress } = useGraphStore();
+  const {
+    nodes: gNodes,
+    edges: gEdges,
+    layoutState,
+    viewState,
+    progress,
+    focusRootId,
+    focusUpstreamIds,
+    focusExpandedIds,
+    focusBoundaryIds,
+    searchQuery,
+    enterFocus,
+    expandFocusDownstream,
+    collapseFocusDownstream,
+    expandFocusAll,
+    exitFocus,
+    setSearchQuery,
+  } = useGraphStore();
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
 
-  const referencedNodeIds = useMemo(() => {
-    const refs = new Set<string>();
-    if (!hasSelection) return refs;
-    const hlSet = new Set(highlightedEdgeIds);
-    for (const e of gEdges) {
-      if (hlSet.has(e.id)) { refs.add(e.sourceId); refs.add(e.targetId); }
-    }
-    return refs;
-  }, [hasSelection, highlightedEdgeIds, gEdges]);
+  // ESC key: exit focus or clear search
+  React.useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        if (focusRootId) exitFocus();
+        else if (searchQuery) setSearchQuery('');
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [focusRootId, searchQuery, exitFocus, setSearchQuery]);
 
-  // Apply filters
-  const filteredNodes = useMemo(() => gNodes.filter((n) => {
+  // Base nodes: apply only persistent filters (hideTestClasses, hideManagedPackages)
+  const baseNodes = useMemo(() => gNodes.filter((n) => {
     if (activeFilters.hideTestClasses &&
       (n.kind === 'apex-class' || n.kind === 'apex-interface') &&
       (n as ApexClassNode).isTestClass) return false;
@@ -169,15 +192,75 @@ export function CodeGraphCanvas() {
     return true;
   }), [gNodes, activeFilters]);
 
+  const baseNodeIds = useMemo(() => new Set(baseNodes.map((n) => n.id)), [baseNodes]);
+
+  // Compute focus visible set from upstream + expanded downstream
+  const focusVisibleIds = useMemo(() => {
+    if (!focusRootId) return new Set<string>();
+    const visible = new Set<string>([focusRootId]);
+    for (const id of focusUpstreamIds) visible.add(id);
+    for (const expandedId of focusExpandedIds) {
+      for (const e of gEdges) {
+        if (e.sourceId === expandedId && focusBoundaryIds.has(e.targetId)) {
+          visible.add(e.targetId);
+        }
+      }
+    }
+    return visible;
+  }, [focusRootId, focusUpstreamIds, focusExpandedIds, focusBoundaryIds, gEdges]);
+
+  // Filtered nodes: apply focus or search on top of base
+  const filteredNodes = useMemo(() => {
+    if (focusRootId) return baseNodes.filter((n) => focusVisibleIds.has(n.id));
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      return baseNodes.filter((n) => n.label.toLowerCase().includes(q));
+    }
+    return baseNodes;
+  }, [baseNodes, focusRootId, focusVisibleIds, searchQuery]);
+
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
+
   const filteredEdges = useMemo(
     () => gEdges.filter((e) => filteredNodeIds.has(e.sourceId) && filteredNodeIds.has(e.targetId)),
     [gEdges, filteredNodeIds]
   );
 
-  // Build RF nodes, applying Dagre on first load
+  // Per-node expand/collapse state in focus mode
+  const nodeExpandState = useMemo(() => {
+    if (!focusRootId) return new Map<string, { canExpand: boolean; canCollapse: boolean }>();
+    const map = new Map<string, { canExpand: boolean; canCollapse: boolean }>();
+    for (const n of filteredNodes) {
+      const hasHiddenDownstream = gEdges.some(
+        (e) => e.sourceId === n.id && focusBoundaryIds.has(e.targetId) && !focusVisibleIds.has(e.targetId)
+      );
+      const isExpanded = focusExpandedIds.has(n.id);
+      const hasAnyDownstreamInBoundary = gEdges.some(
+        (e) => e.sourceId === n.id && focusBoundaryIds.has(e.targetId)
+      );
+      if (!hasAnyDownstreamInBoundary) continue;
+      map.set(n.id, {
+        canExpand: hasHiddenDownstream,
+        canCollapse: isExpanded,
+      });
+    }
+    return map;
+  }, [focusRootId, filteredNodes, gEdges, focusBoundaryIds, focusVisibleIds, focusExpandedIds]);
+
+  // Referenced nodes for edge highlight (only in non-focus mode)
+  const referencedNodeIds = useMemo(() => {
+    const refs = new Set<string>();
+    if (!hasSelection || focusRootId) return refs;
+    const hlSet = new Set(highlightedEdgeIds);
+    for (const e of gEdges) {
+      if (hlSet.has(e.id)) { refs.add(e.sourceId); refs.add(e.targetId); }
+    }
+    return refs;
+  }, [hasSelection, focusRootId, highlightedEdgeIds, gEdges]);
+
+  // Build RF nodes: run Dagre only on first load (no existing layout positions)
   const rfNodesBase = useMemo(() => {
-    const needsLayout = filteredNodes.some((n) => !layoutState[n.id]);
+    const needsLayout = !filteredNodes.some((n) => layoutState[n.id]);
 
     const withPos: Node[] = filteredNodes.map((n, i): Node => {
       const col = i % 5;
@@ -201,7 +284,9 @@ export function CodeGraphCanvas() {
     return withPos;
   }, [filteredNodes, filteredEdges, layoutState]);
 
-  // Merge highlight/dim state
+  // In focus mode, suppress dim effect (only relevant nodes are shown)
+  const isAnySelectedForDim = hasSelection && !focusRootId;
+
   const rfNodes: Node[] = useMemo(() =>
     rfNodesBase.map((rfNode) => {
       const gNode = gNodes.find((n) => n.id === rfNode.id);
@@ -213,13 +298,23 @@ export function CodeGraphCanvas() {
           postMessage({ type: 'OPEN_FILE', payload: { uri: gNode.uri, range: gNode.range } });
         }
       };
-      return toRFNode(gNode, rfNode.position, isSelected, isReferenced, hasSelection, onOpenFile);
+      const expandState = nodeExpandState.get(rfNode.id);
+      return toRFNode(
+        gNode,
+        rfNode.position,
+        isSelected,
+        isReferenced,
+        isAnySelectedForDim,
+        onOpenFile,
+        expandState?.canExpand ? () => expandFocusDownstream(rfNode.id) : undefined,
+        expandState?.canCollapse ? () => collapseFocusDownstream(rfNode.id) : undefined,
+      );
     }),
-  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, hasSelection]);
+  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, isAnySelectedForDim, nodeExpandState, expandFocusDownstream, collapseFocusDownstream]);
 
   const rfEdges: Edge[] = useMemo(() =>
-    filteredEdges.map((e) => toRFEdge(e, highlightedEdgeIds.includes(e.id), hasSelection)),
-  [filteredEdges, highlightedEdgeIds, hasSelection]);
+    filteredEdges.map((e) => toRFEdge(e, highlightedEdgeIds.includes(e.id), isAnySelectedForDim)),
+  [filteredEdges, highlightedEdgeIds, isAnySelectedForDim]);
 
   const [nodes, setNodes] = React.useState<Node[]>(rfNodes);
   const [edges, setEdges] = React.useState<Edge[]>(rfEdges);
@@ -246,11 +341,12 @@ export function CodeGraphCanvas() {
     []
   );
 
+  // Single click: enter focus mode
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    useGraphStore.getState().setSelectedNodes([node.id]);
-    postMessage({ type: 'GET_REFERENCES', payload: { nodeId: node.id } });
-  }, []);
+    enterFocus(node.id, baseNodeIds);
+  }, [enterFocus, baseNodeIds]);
 
+  // Double click: open file in editor
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: Node) => {
     const gNode = gNodes.find((n) => n.id === node.id);
     if (!gNode || !hasLocation(gNode)) return;
@@ -258,10 +354,15 @@ export function CodeGraphCanvas() {
   }, [gNodes]);
 
   const onPaneClick = useCallback(() => {
-    useGraphStore.getState().clearHighlight();
-  }, []);
+    if (focusRootId) exitFocus();
+    else useGraphStore.getState().clearHighlight();
+  }, [focusRootId, exitFocus]);
 
   const isEmpty = gNodes.length === 0 && !progress;
+
+  const focusRootLabel = focusRootId
+    ? (gNodes.find((n) => n.id === focusRootId)?.label ?? focusRootId)
+    : null;
 
   return (
     <div style={{ width: '100%', height: '100vh', position: 'relative', background: '#0a0c14' }}>
@@ -295,7 +396,41 @@ export function CodeGraphCanvas() {
         />
       </ReactFlow>
 
-      {/* Filter toggles */}
+      {/* Search box (top left) */}
+      <div style={{
+        position: 'absolute', top: 8, left: 8,
+        display: 'flex', alignItems: 'center', gap: 4,
+      }}>
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="クラスを検索…"
+          style={{
+            background: '#1e1e2e',
+            border: `1px solid ${searchQuery ? '#4a90d9' : '#333'}`,
+            borderRadius: 4,
+            color: '#cce4f7',
+            fontSize: 11,
+            padding: '3px 8px',
+            width: 160,
+            outline: 'none',
+          }}
+        />
+        {searchQuery && (
+          <button
+            onClick={() => setSearchQuery('')}
+            style={{
+              background: 'none', border: 'none', color: '#666',
+              fontSize: 13, cursor: 'pointer', padding: '0 2px',
+            }}
+          >
+            ×
+          </button>
+        )}
+      </div>
+
+      {/* Filter toggles (top right) */}
       <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 6 }}>
         <FilterToggle
           label="テスト非表示"
@@ -313,27 +448,55 @@ export function CodeGraphCanvas() {
       {!isEmpty && !progress && (
         <div style={{
           position: 'absolute', bottom: 8, left: 8, fontSize: 10,
-          color: '#444', pointerEvents: 'none',
+          color: '#555', pointerEvents: 'none',
+          display: 'flex', alignItems: 'center', gap: 8,
         }}>
-          {filteredNodes.length} nodes · {filteredEdges.length} edges
-          {filteredEdges.some((e) => e.kind === 'instantiates' || e.kind === 'calls') && (
-            <span style={{ marginLeft: 6 }}>
-              {filteredEdges.filter((e) => e.kind === 'instantiates').length > 0 && (
-                <span style={{ color: '#44ccbb' }}>
-                  {filteredEdges.filter((e) => e.kind === 'instantiates').length} new
+          {focusRootId ? (
+            <>
+              <span style={{ color: '#ff8c00' }}>
+                フォーカス: {focusRootLabel}
+              </span>
+              <span>{filteredNodes.length} ノード表示中</span>
+              <button
+                onClick={expandFocusAll}
+                style={{
+                  pointerEvents: 'all',
+                  background: '#1e1e2e',
+                  border: '1px solid #444',
+                  color: '#aaa',
+                  fontSize: 10,
+                  borderRadius: 3,
+                  padding: '1px 6px',
+                  cursor: 'pointer',
+                }}
+              >
+                すべて展開
+              </button>
+              <span style={{ color: '#444' }}>ESCで解除</span>
+            </>
+          ) : (
+            <>
+              <span>{filteredNodes.length} nodes · {filteredEdges.length} edges</span>
+              {filteredEdges.some((e) => e.kind === 'instantiates' || e.kind === 'calls') && (
+                <span style={{ display: 'flex', gap: 4 }}>
+                  {filteredEdges.filter((e) => e.kind === 'instantiates').length > 0 && (
+                    <span style={{ color: '#44ccbb' }}>
+                      {filteredEdges.filter((e) => e.kind === 'instantiates').length} new
+                    </span>
+                  )}
+                  {filteredEdges.filter((e) => e.kind === 'calls').length > 0 && (
+                    <span style={{ color: '#bb88ff' }}>
+                      {filteredEdges.filter((e) => e.kind === 'calls').length} calls
+                    </span>
+                  )}
                 </span>
               )}
-              {filteredEdges.filter((e) => e.kind === 'calls').length > 0 && (
-                <span style={{ color: '#bb88ff', marginLeft: 4 }}>
-                  {filteredEdges.filter((e) => e.kind === 'calls').length} calls
+              {hasSelection && (
+                <span style={{ color: '#ffd700' }}>
+                  参照ハイライト中 — クリックで解除
                 </span>
               )}
-            </span>
-          )}
-          {hasSelection && (
-            <span style={{ color: '#ffd700', marginLeft: 8 }}>
-              参照ハイライト中 — クリックで解除
-            </span>
+            </>
           )}
         </div>
       )}
