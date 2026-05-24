@@ -32,7 +32,9 @@
     "watch:webview": "vite",
     "lint": "eslint src --ext .ts,.tsx",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.webview.json --noEmit",
-    "check": "npm run lint && npm run typecheck && npm run build",
+    "test": "vitest run --config vitest.config.ts",
+    "test:watch": "vitest --config vitest.config.ts",
+    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
@@ -52,6 +54,7 @@
     "react-dom": "^18.3.1",
     "typescript": "^5.5.4",
     "vite": "^5.4.0",
+    "vitest": "^4.1.7",
     "zustand": "^4.5.5"
   },
   "dependencies": {
