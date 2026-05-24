@@ -14,7 +14,9 @@ export function applyDagreLayout(
   g.setGraph({ rankdir: direction, ranksep: 80, nodesep: 40 });
 
   for (const node of nodes) {
-    g.setNode(node.id, { width: NODE_WIDTH, height: NODE_HEIGHT });
+    const w = typeof node.style?.width === 'number' ? node.style.width : NODE_WIDTH;
+    const h = typeof node.style?.height === 'number' ? node.style.height : NODE_HEIGHT;
+    g.setNode(node.id, { width: w, height: h });
   }
   for (const edge of edges) {
     // Dagre requires source/target to be in the graph

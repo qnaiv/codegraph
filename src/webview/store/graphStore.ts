@@ -44,6 +44,7 @@ interface GraphStore {
   viewState: ViewState;
   progress: Progress | null;
   referenceMap: ReferenceMap;
+  showMethodLevel: boolean;
 
   setSnapshot: (snapshot: GraphSnapshot) => void;
   setGranularity: (level: GranularityLevel) => void;
@@ -53,6 +54,7 @@ interface GraphStore {
   updateFilter: (patch: Partial<NodeFilter>) => void;
   updateNodePosition: (nodeId: string, pos: XYPosition) => void;
   setProgress: (progress: Progress) => void;
+  toggleMethodLevel: () => void;
 }
 
 export const useGraphStore = create<GraphStore>((set, get) => ({
@@ -63,6 +65,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   viewState: defaultViewState,
   progress: null,
   referenceMap: new Map(),
+  showMethodLevel: false,
 
   setSnapshot(snapshot) {
     set({
@@ -151,5 +154,12 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   setProgress(progress) {
     set({ progress });
+  },
+
+  toggleMethodLevel() {
+    set((s) => ({
+      showMethodLevel: !s.showMethodLevel,
+      layoutState: {},  // force Dagre re-layout with new container sizes
+    }));
   },
 }));

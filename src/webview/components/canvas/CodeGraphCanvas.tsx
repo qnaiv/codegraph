@@ -25,6 +25,7 @@ import {
 import { ApexClassNodeComponent } from '../nodes/ApexClassNode';
 import { SObjectNodeComponent } from '../nodes/SObjectNode';
 import { ApexTriggerNodeComponent } from '../nodes/ApexTriggerNode';
+import { ApexMethodNodeComponent } from '../nodes/ApexMethodNode';
 import { CodeGraphEdgeComponent } from '../edges/CodeGraphEdge';
 import { applyDagreLayout } from '../../layout/DagreLayout';
 
@@ -32,9 +33,10 @@ import { applyDagreLayout } from '../../layout/DagreLayout';
 // React Flow type registrations
 // -----------------------------------------------------------------------
 const nodeTypes: NodeTypes = {
-  apexClass: ApexClassNodeComponent,
-  sobject: SObjectNodeComponent,
+  apexClass:   ApexClassNodeComponent,
+  sobject:     SObjectNodeComponent,
   apexTrigger: ApexTriggerNodeComponent,
+  apexMethod:  ApexMethodNodeComponent,
 };
 
 const edgeTypes: EdgeTypes = {
@@ -42,47 +44,62 @@ const edgeTypes: EdgeTypes = {
 };
 
 // -----------------------------------------------------------------------
-// Graph node → React Flow Node conversion
+// Container sizing constants
+// -----------------------------------------------------------------------
+const CONTAINER_W        = 200;
+const CONTAINER_HEADER_H = 56;   // class header area (name + sharing badge)
+const METHOD_H           = 50;   // height per method node
+const METHOD_GAP         = 4;    // vertical gap between methods
+const CONTAINER_PAD_B    = 10;   // bottom padding
+
+function containerSize(methodCount: number) {
+  const height = methodCount > 0
+    ? CONTAINER_HEADER_H + methodCount * (METHOD_H + METHOD_GAP) + CONTAINER_PAD_B
+    : 80;
+  return { width: CONTAINER_W, height };
+}
+
+// -----------------------------------------------------------------------
+// Helpers
 // -----------------------------------------------------------------------
 function nodeTypeForKind(kind: GraphNode['kind']): string {
   switch (kind) {
     case 'apex-class':
     case 'apex-interface':
-    case 'apex-enum':
-      return 'apexClass';
-    case 'apex-trigger':
-      return 'apexTrigger';
-    case 'sobject':
-      return 'sobject';
-    default:
-      return 'default';
+    case 'apex-enum':    return 'apexClass';
+    case 'apex-trigger': return 'apexTrigger';
+    case 'apex-method':
+    case 'apex-constructor': return 'apexMethod';
+    case 'sobject':      return 'sobject';
+    default:             return 'default';
   }
+}
+
+function isApexClass(n: GraphNode): n is ApexClassNode {
+  return n.kind === 'apex-class' || n.kind === 'apex-interface' || n.kind === 'apex-enum';
 }
 
 function toRFNode(
   gNode: GraphNode,
   pos: { x: number; y: number },
+  existingStyle: React.CSSProperties | undefined,
   isSelected: boolean,
   isReferenced: boolean,
   isAnySelected: boolean,
-  onOpenFile: () => void
+  onOpenFile: () => void,
+  isContainer: boolean,
 ): Node {
   const isDimmed = isAnySelected && !isSelected && !isReferenced;
   const isHighlighted = isSelected || isReferenced;
-
   return {
     id: gNode.id,
     type: nodeTypeForKind(gNode.kind),
     position: pos,
-    data: {
-      graphNode: gNode,
-      isDimmed,
-      isHighlighted,
-      onOpenFile,
+    data: { graphNode: gNode, isDimmed, isHighlighted, onOpenFile, isContainer },
+    style: {
+      ...existingStyle,
+      ...(isHighlighted ? { boxShadow: `0 0 0 2px ${isSelected ? '#ff8c00' : '#ffd700'}`, borderRadius: 8 } : {}),
     },
-    style: isHighlighted
-      ? { boxShadow: `0 0 0 2px ${isSelected ? '#ff8c00' : '#ffd700'}`, borderRadius: 8 }
-      : undefined,
   };
 }
 
@@ -106,13 +123,11 @@ function toRFEdge(gEdge: GraphEdge, isHighlighted: boolean, isAnySelected: boole
 // -----------------------------------------------------------------------
 function ProgressOverlay({ stage, percent }: { stage: string; percent: number }) {
   return (
-    <div
-      style={{
-        position: 'absolute', inset: 0, zIndex: 10,
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        background: 'rgba(10,10,20,0.88)', color: '#cce4f7',
-      }}
-    >
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 10,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(10,10,20,0.88)', color: '#cce4f7',
+    }}>
       <div style={{ fontSize: 14, marginBottom: 12 }}>{stage}</div>
       <div style={{ width: 240, height: 6, background: '#333', borderRadius: 3 }}>
         <div style={{ width: `${percent}%`, height: '100%', background: '#4a90d9', borderRadius: 3, transition: 'width 0.3s' }} />
@@ -123,7 +138,7 @@ function ProgressOverlay({ stage, percent }: { stage: string; percent: number })
 }
 
 // -----------------------------------------------------------------------
-// Filter toggle button
+// Toggle button
 // -----------------------------------------------------------------------
 function FilterToggle({ label, active, onToggle }: { label: string; active: boolean; onToggle: (v: boolean) => void }) {
   return (
@@ -145,7 +160,10 @@ function FilterToggle({ label, active, onToggle }: { label: string; active: bool
 // Main canvas
 // -----------------------------------------------------------------------
 export function CodeGraphCanvas() {
-  const { nodes: gNodes, edges: gEdges, layoutState, viewState, progress } = useGraphStore();
+  const {
+    nodes: gNodes, edges: gEdges, layoutState, viewState, progress,
+    showMethodLevel, toggleMethodLevel,
+  } = useGraphStore();
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
 
@@ -159,13 +177,10 @@ export function CodeGraphCanvas() {
     return refs;
   }, [hasSelection, highlightedEdgeIds, gEdges]);
 
-  // Apply filters
+  // Base filter (test classes, managed packages)
   const filteredNodes = useMemo(() => gNodes.filter((n) => {
-    if (activeFilters.hideTestClasses &&
-      (n.kind === 'apex-class' || n.kind === 'apex-interface') &&
-      (n as ApexClassNode).isTestClass) return false;
-    if (activeFilters.hideManagedPackages &&
-      'namespace' in n && (n as ApexClassNode).namespace) return false;
+    if (activeFilters.hideTestClasses && isApexClass(n) && (n as ApexClassNode).isTestClass) return false;
+    if (activeFilters.hideManagedPackages && 'namespace' in n && (n as ApexClassNode).namespace) return false;
     return true;
   }), [gNodes, activeFilters]);
 
@@ -175,47 +190,100 @@ export function CodeGraphCanvas() {
     [gEdges, filteredNodeIds]
   );
 
-  // Build RF nodes, applying Dagre on first load
+  // -----------------------------------------------------------------------
+  // Build RF nodes: method-level containers OR flat class nodes
+  // -----------------------------------------------------------------------
   const rfNodesBase = useMemo(() => {
-    const needsLayout = filteredNodes.some((n) => !layoutState[n.id]);
+    if (showMethodLevel) {
+      const containerNodes: Node[] = [];
+      const methodNodes: Node[] = [];
 
+      for (const n of filteredNodes) {
+        const pos = layoutState[n.id] ?? { x: 0, y: 0 };
+
+        if (isApexClass(n)) {
+          const { width, height } = containerSize(n.methods.length);
+          containerNodes.push({
+            id: n.id,
+            type: 'apexClass',
+            position: pos,
+            style: { width, height },
+            data: { graphNode: n, isContainer: true },
+          });
+          n.methods.forEach((method, i) => {
+            methodNodes.push({
+              id: method.id,
+              type: 'apexMethod',
+              position: {
+                x: 8,
+                y: CONTAINER_HEADER_H + i * (METHOD_H + METHOD_GAP),
+              },
+              parentId: n.id,
+              extent: 'parent' as const,
+              draggable: false,
+              selectable: false,
+              data: { graphNode: method },
+            });
+          });
+        } else {
+          containerNodes.push({
+            id: n.id,
+            type: nodeTypeForKind(n.kind),
+            position: pos,
+            data: { graphNode: n },
+          });
+        }
+      }
+
+      // Dagre on container nodes only (method children are positioned inside)
+      const needsLayout = !containerNodes.some((cn) => layoutState[cn.id]);
+      const rfEdgesForLayout: Edge[] = filteredEdges.map((e) => ({
+        id: e.id, source: e.sourceId, target: e.targetId,
+      }));
+      const laid = needsLayout
+        ? applyDagreLayout(containerNodes, rfEdgesForLayout, 'LR')
+        : containerNodes;
+
+      return [...laid, ...methodNodes];
+    }
+
+    // Flat class-level mode
+    const needsLayout = filteredNodes.some((n) => !layoutState[n.id]);
     const withPos: Node[] = filteredNodes.map((n, i): Node => {
       const col = i % 5;
       const row = Math.floor(i / 5);
       const pos = layoutState[n.id] ?? { x: col * 220, y: row * 160 };
-      return {
-        id: n.id,
-        type: nodeTypeForKind(n.kind),
-        position: pos,
-        data: { graphNode: n },
-      };
+      return { id: n.id, type: nodeTypeForKind(n.kind), position: pos, data: { graphNode: n } };
     });
-
     const rfEdgesForLayout: Edge[] = filteredEdges.map((e) => ({
       id: e.id, source: e.sourceId, target: e.targetId,
     }));
+    return needsLayout ? applyDagreLayout(withPos, rfEdgesForLayout, 'LR') : withPos;
+  }, [filteredNodes, filteredEdges, layoutState, showMethodLevel]);
 
-    if (needsLayout) {
-      return applyDagreLayout(withPos, rfEdgesForLayout, 'LR');
-    }
-    return withPos;
-  }, [filteredNodes, filteredEdges, layoutState]);
-
-  // Merge highlight/dim state
+  // Merge highlight / dim state onto top-level nodes; pass through method child nodes as-is
   const rfNodes: Node[] = useMemo(() =>
     rfNodesBase.map((rfNode) => {
+      // Method child nodes: no interaction state needed
+      if (rfNode.parentId) return rfNode;
+
       const gNode = gNodes.find((n) => n.id === rfNode.id);
       if (!gNode) return rfNode;
-      const isSelected = selectedNodeIds.includes(rfNode.id);
+
+      const isSelected  = selectedNodeIds.includes(rfNode.id);
       const isReferenced = referencedNodeIds.has(rfNode.id);
       const onOpenFile = () => {
         if (hasLocation(gNode)) {
           postMessage({ type: 'OPEN_FILE', payload: { uri: gNode.uri, range: gNode.range } });
         }
       };
-      return toRFNode(gNode, rfNode.position, isSelected, isReferenced, hasSelection, onOpenFile);
+      const containerFlag = showMethodLevel && isApexClass(gNode);
+      return toRFNode(
+        gNode, rfNode.position, rfNode.style as React.CSSProperties | undefined,
+        isSelected, isReferenced, hasSelection, onOpenFile, containerFlag,
+      );
     }),
-  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, hasSelection]);
+  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, hasSelection, showMethodLevel]);
 
   const rfEdges: Edge[] = useMemo(() =>
     filteredEdges.map((e) => toRFEdge(e, highlightedEdgeIds.includes(e.id), hasSelection)),
@@ -247,11 +315,13 @@ export function CodeGraphCanvas() {
   );
 
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    if (node.parentId) return; // method child nodes: ignore
     useGraphStore.getState().setSelectedNodes([node.id]);
     postMessage({ type: 'GET_REFERENCES', payload: { nodeId: node.id } });
   }, []);
 
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: Node) => {
+    if (node.parentId) return;
     const gNode = gNodes.find((n) => n.id === node.id);
     if (!gNode || !hasLocation(gNode)) return;
     postMessage({ type: 'OPEN_FILE', payload: { uri: gNode.uri, range: gNode.range } });
@@ -279,7 +349,7 @@ export function CodeGraphCanvas() {
         onPaneClick={onPaneClick}
         fitView
         colorMode="dark"
-        minZoom={0.08}
+        minZoom={0.05}
         maxZoom={4}
         proOptions={{ hideAttribution: true }}
       >
@@ -289,13 +359,14 @@ export function CodeGraphCanvas() {
           nodeColor={(node) => {
             if (node.id.startsWith('sobject:')) return '#4a9d4a';
             if (node.id.startsWith('trigger:')) return '#9d4a9d';
+            if (node.id.startsWith('method:'))  return '#2a4060';
             return '#4a90d9';
           }}
           style={{ background: '#0e1018', border: '1px solid #222' }}
         />
       </ReactFlow>
 
-      {/* Filter toggles */}
+      {/* Toolbar: filter toggles + method level toggle */}
       <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 6 }}>
         <FilterToggle
           label="テスト非表示"
@@ -307,6 +378,11 @@ export function CodeGraphCanvas() {
           active={activeFilters.hideManagedPackages}
           onToggle={(v) => useGraphStore.getState().updateFilter({ hideManagedPackages: v })}
         />
+        <FilterToggle
+          label="メソッドレベル"
+          active={showMethodLevel}
+          onToggle={toggleMethodLevel}
+        />
       </div>
 
       {/* Status bar */}
@@ -316,18 +392,9 @@ export function CodeGraphCanvas() {
           color: '#444', pointerEvents: 'none',
         }}>
           {filteredNodes.length} nodes · {filteredEdges.length} edges
-          {filteredEdges.some((e) => e.kind === 'instantiates' || e.kind === 'calls') && (
-            <span style={{ marginLeft: 6 }}>
-              {filteredEdges.filter((e) => e.kind === 'instantiates').length > 0 && (
-                <span style={{ color: '#44ccbb' }}>
-                  {filteredEdges.filter((e) => e.kind === 'instantiates').length} new
-                </span>
-              )}
-              {filteredEdges.filter((e) => e.kind === 'calls').length > 0 && (
-                <span style={{ color: '#bb88ff', marginLeft: 4 }}>
-                  {filteredEdges.filter((e) => e.kind === 'calls').length} calls
-                </span>
-              )}
+          {showMethodLevel && (
+            <span style={{ color: '#4a90d9', marginLeft: 8 }}>
+              メソッドレベル表示中
             </span>
           )}
           {hasSelection && (
