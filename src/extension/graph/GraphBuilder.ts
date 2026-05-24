@@ -350,6 +350,12 @@ export async function buildGraphSnapshot(
 
   onProgress?.('完了', 100);
 
+  const edgeKindCounts = edges.reduce<Record<string, number>>((acc, e) => {
+    acc[e.kind] = (acc[e.kind] ?? 0) + 1;
+    return acc;
+  }, {});
+  console.log(`[CodeGraph] snapshot: ${nodes.length} nodes, ${edges.length} edges`, edgeKindCounts);
+
   return {
     version: 1,
     projectRoot: path.basename(workspaceRoot),

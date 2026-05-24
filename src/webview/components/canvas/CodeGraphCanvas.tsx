@@ -316,6 +316,20 @@ export function CodeGraphCanvas() {
           color: '#444', pointerEvents: 'none',
         }}>
           {filteredNodes.length} nodes · {filteredEdges.length} edges
+          {filteredEdges.some((e) => e.kind === 'instantiates' || e.kind === 'calls') && (
+            <span style={{ marginLeft: 6 }}>
+              {filteredEdges.filter((e) => e.kind === 'instantiates').length > 0 && (
+                <span style={{ color: '#44ccbb' }}>
+                  {filteredEdges.filter((e) => e.kind === 'instantiates').length} new
+                </span>
+              )}
+              {filteredEdges.filter((e) => e.kind === 'calls').length > 0 && (
+                <span style={{ color: '#bb88ff', marginLeft: 4 }}>
+                  {filteredEdges.filter((e) => e.kind === 'calls').length} calls
+                </span>
+              )}
+            </span>
+          )}
           {hasSelection && (
             <span style={{ color: '#ffd700', marginLeft: 8 }}>
               参照ハイライト中 — クリックで解除

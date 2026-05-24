@@ -5,13 +5,13 @@ import { EdgeKind } from '../../../shared/types';
 const EDGE_STYLES: Record<EdgeKind, { stroke: string; strokeDasharray?: string; label: string }> = {
   inherits:          { stroke: '#4a90d9', label: 'extends' },
   implements:        { stroke: '#7ec8e3', strokeDasharray: '5 3', label: 'implements' },
-  calls:             { stroke: '#888888', label: 'calls' },
+  calls:             { stroke: '#bb88ff', label: 'calls' },
   'soql-references': { stroke: '#4a9d4a', strokeDasharray: '6 3', label: 'SOQL' },
   'dml-insert':      { stroke: '#e8a020', label: 'insert' },
   'dml-update':      { stroke: '#d4c820', label: 'update' },
   'dml-delete':      { stroke: '#e03030', label: 'delete' },
   'field-lookup':    { stroke: '#556677', strokeDasharray: '3 3', label: 'lookup' },
-  instantiates:      { stroke: '#aaaaaa', strokeDasharray: '4 2', label: 'new' },
+  instantiates:      { stroke: '#44ccbb', strokeDasharray: '4 2', label: 'new' },
   'trigger-on':      { stroke: '#9d4a9d', label: 'trigger' },
   'annotation-attach': { stroke: '#555555', strokeDasharray: '2 4', label: '' },
 };
