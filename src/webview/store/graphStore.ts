@@ -35,19 +35,17 @@ export interface Progress {
 
 type ReferenceMap = Map<string, Set<string>>;
 
-function bfsAll(rootId: string, edges: GraphEdge[], allowedIds: Set<string>): Set<string> {
-  const visited = new Set<string>([rootId]);
+/** Reverse BFS: collect all callers (upstream) of rootId within allowedIds. */
+function bfsUpstream(rootId: string, edges: GraphEdge[], allowedIds: Set<string>): Set<string> {
+  const visited = new Set<string>();
   const queue = [rootId];
   while (queue.length > 0) {
     const cur = queue.shift()!;
     for (const e of edges) {
-      const neighbor =
-        e.sourceId === cur && !visited.has(e.targetId) ? e.targetId
-        : e.targetId === cur && !visited.has(e.sourceId) ? e.sourceId
-        : null;
-      if (neighbor && allowedIds.has(neighbor)) {
-        visited.add(neighbor);
-        queue.push(neighbor);
+      const caller = e.targetId === cur && !visited.has(e.sourceId) ? e.sourceId : null;
+      if (caller && allowedIds.has(caller)) {
+        visited.add(caller);
+        queue.push(caller);
       }
     }
   }
@@ -63,7 +61,8 @@ interface GraphStore {
   progress: Progress | null;
   referenceMap: ReferenceMap;
   focusRootId: string | null;
-  focusVisibleIds: Set<string>;
+  focusUpstreamIds: Set<string>;
+  focusExpandedIds: Set<string>;
   focusBoundaryIds: Set<string>;
   searchQuery: string;
 
@@ -76,8 +75,9 @@ interface GraphStore {
   updateNodePosition: (nodeId: string, pos: XYPosition) => void;
   setProgress: (progress: Progress) => void;
   enterFocus: (rootId: string, baseNodeIds: Set<string>) => void;
-  collapseFocus: () => void;
-  expandFocusNode: (nodeId: string) => void;
+  expandFocusDownstream: (nodeId: string) => void;
+  collapseFocusDownstream: (nodeId: string) => void;
+  expandFocusAll: () => void;
   exitFocus: () => void;
   setSearchQuery: (q: string) => void;
 }
@@ -91,7 +91,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   progress: null,
   referenceMap: new Map(),
   focusRootId: null,
-  focusVisibleIds: new Set(),
+  focusUpstreamIds: new Set(),
+  focusExpandedIds: new Set(),
   focusBoundaryIds: new Set(),
   searchQuery: '',
 
@@ -105,7 +106,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       progress: null,
       referenceMap: new Map(),
       focusRootId: null,
-      focusVisibleIds: new Set(),
+      focusUpstreamIds: new Set(),
+      focusExpandedIds: new Set(),
       focusBoundaryIds: new Set(),
       searchQuery: '',
     });
@@ -188,10 +190,11 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   enterFocus(rootId, baseNodeIds) {
     const { edges } = get();
-    const visible = bfsAll(rootId, edges, baseNodeIds);
+    const upstream = bfsUpstream(rootId, edges, baseNodeIds);
     set((s) => ({
       focusRootId: rootId,
-      focusVisibleIds: visible,
+      focusUpstreamIds: upstream,
+      focusExpandedIds: new Set([rootId]),
       focusBoundaryIds: baseNodeIds,
       referenceMap: new Map(),
       viewState: {
@@ -202,31 +205,31 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     }));
   },
 
-  collapseFocus() {
-    const { focusRootId, edges, focusBoundaryIds } = get();
-    if (!focusRootId) return;
-    const visible = new Set<string>([focusRootId]);
-    for (const e of edges) {
-      if (e.sourceId === focusRootId && focusBoundaryIds.has(e.targetId)) visible.add(e.targetId);
-      if (e.targetId === focusRootId && focusBoundaryIds.has(e.sourceId)) visible.add(e.sourceId);
-    }
-    set({ focusVisibleIds: visible });
+  expandFocusDownstream(nodeId) {
+    set((s) => ({
+      focusExpandedIds: new Set([...s.focusExpandedIds, nodeId]),
+    }));
   },
 
-  expandFocusNode(nodeId) {
-    const { edges, focusVisibleIds, focusBoundaryIds } = get();
-    const newVisible = new Set(focusVisibleIds);
-    for (const e of edges) {
-      if (e.sourceId === nodeId && focusBoundaryIds.has(e.targetId)) newVisible.add(e.targetId);
-      if (e.targetId === nodeId && focusBoundaryIds.has(e.sourceId)) newVisible.add(e.sourceId);
-    }
-    set({ focusVisibleIds: newVisible });
+  collapseFocusDownstream(nodeId) {
+    set((s) => {
+      const next = new Set(s.focusExpandedIds);
+      next.delete(nodeId);
+      return { focusExpandedIds: next };
+    });
+  },
+
+  expandFocusAll() {
+    set((s) => ({
+      focusExpandedIds: new Set(s.focusBoundaryIds),
+    }));
   },
 
   exitFocus() {
     set((s) => ({
       focusRootId: null,
-      focusVisibleIds: new Set(),
+      focusUpstreamIds: new Set(),
+      focusExpandedIds: new Set(),
       focusBoundaryIds: new Set(),
       referenceMap: new Map(),
       viewState: {

@@ -8,8 +8,8 @@ interface ApexClassNodeProps extends NodeProps {
     isHighlighted?: boolean;
     isDimmed?: boolean;
     onOpenFile?: () => void;
-    hiddenNeighborCount?: number;
-    onExpandNode?: () => void;
+    onExpandDownstream?: () => void;
+    onCollapseDownstream?: () => void;
   };
 }
 
@@ -31,7 +31,7 @@ const ANNOTATION_ICONS: Record<string, string> = {
 export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
   data,
 }: ApexClassNodeProps) {
-  const { graphNode: node, isDimmed, onOpenFile, hiddenNeighborCount, onExpandNode } = data;
+  const { graphNode: node, isDimmed, onOpenFile, onExpandDownstream, onCollapseDownstream } = data;
 
   const soqlCount = node.methods.reduce((n, m) => n + m.soqlQueries.length, 0);
   const dmlCount = node.methods.reduce((n, m) => n + m.dmlOperations.length, 0);
@@ -101,8 +101,11 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
             <Badge color="#9d4a9d" text="global" />
           )}
         </div>
-        {(hiddenNeighborCount ?? 0) > 0 && (
-          <ExpandBadge count={hiddenNeighborCount!} onExpand={onExpandNode!} />
+        {(onExpandDownstream || onCollapseDownstream) && (
+          <ExpandCollapseButtons
+            onExpand={onExpandDownstream}
+            onCollapse={onCollapseDownstream}
+          />
         )}
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: borderColor }} />
@@ -110,25 +113,53 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
   );
 });
 
-function ExpandBadge({ count, onExpand }: { count: number; onExpand: () => void }) {
+function ExpandCollapseButtons({
+  onExpand,
+  onCollapse,
+}: {
+  onExpand?: () => void;
+  onCollapse?: () => void;
+}) {
   return (
-    <div
-      onClick={(e) => { e.stopPropagation(); onExpand(); }}
-      style={{
-        marginTop: 4,
-        display: 'inline-flex',
-        alignItems: 'center',
-        background: '#cc660022',
-        border: '1px solid #cc660066',
-        color: '#cc9944',
-        fontSize: 9,
-        padding: '2px 6px',
-        borderRadius: 3,
-        cursor: 'pointer',
-        userSelect: 'none',
-      }}
-    >
-      +{count} more
+    <div style={{ marginTop: 4, display: 'flex', gap: 4 }}>
+      {onExpand && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onExpand(); }}
+          title="下位ノードを1ホップ展開"
+          style={{
+            background: '#1a3a1a',
+            border: '1px solid #4a9d4a66',
+            color: '#4a9d4a',
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '1px 7px',
+            borderRadius: 3,
+            cursor: 'pointer',
+            lineHeight: 1.4,
+          }}
+        >
+          +
+        </button>
+      )}
+      {onCollapse && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCollapse(); }}
+          title="下位ノードを折りたたむ"
+          style={{
+            background: '#3a1a1a',
+            border: '1px solid #cc444466',
+            color: '#cc6666',
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '1px 7px',
+            borderRadius: 3,
+            cursor: 'pointer',
+            lineHeight: 1.4,
+          }}
+        >
+          −
+        </button>
+      )}
     </div>
   );
 }

@@ -7,8 +7,8 @@ interface ApexTriggerNodeProps extends NodeProps {
     graphNode: ApexTriggerNodeData;
     isDimmed?: boolean;
     onOpenFile?: () => void;
-    hiddenNeighborCount?: number;
-    onExpandNode?: () => void;
+    onExpandDownstream?: () => void;
+    onCollapseDownstream?: () => void;
   };
 }
 
@@ -24,7 +24,7 @@ function eventColor(event: TriggerEvent): string {
 export const ApexTriggerNodeComponent = memo(function ApexTriggerNodeComponent({
   data,
 }: ApexTriggerNodeProps) {
-  const { graphNode: node, isDimmed, onOpenFile, hiddenNeighborCount, onExpandNode } = data;
+  const { graphNode: node, isDimmed, onOpenFile, onExpandDownstream, onCollapseDownstream } = data;
 
   return (
     <>
@@ -69,28 +69,65 @@ export const ApexTriggerNodeComponent = memo(function ApexTriggerNodeComponent({
             </span>
           ))}
         </div>
-        {(hiddenNeighborCount ?? 0) > 0 && (
-          <div
-            onClick={(e) => { e.stopPropagation(); onExpandNode?.(); }}
-            style={{
-              marginTop: 4,
-              display: 'inline-flex',
-              alignItems: 'center',
-              background: '#cc660022',
-              border: '1px solid #cc660066',
-              color: '#cc9944',
-              fontSize: 9,
-              padding: '2px 6px',
-              borderRadius: 3,
-              cursor: 'pointer',
-              userSelect: 'none',
-            }}
-          >
-            +{hiddenNeighborCount} more
-          </div>
+        {(onExpandDownstream || onCollapseDownstream) && (
+          <ExpandCollapseButtons
+            onExpand={onExpandDownstream}
+            onCollapse={onCollapseDownstream}
+          />
         )}
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: '#9d4a9d' }} />
     </>
   );
 });
+
+function ExpandCollapseButtons({
+  onExpand,
+  onCollapse,
+}: {
+  onExpand?: () => void;
+  onCollapse?: () => void;
+}) {
+  return (
+    <div style={{ marginTop: 4, display: 'flex', gap: 4 }}>
+      {onExpand && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onExpand(); }}
+          title="下位ノードを1ホップ展開"
+          style={{
+            background: '#2e1a4a',
+            border: '1px solid #9d4a9d66',
+            color: '#9d4a9d',
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '1px 7px',
+            borderRadius: 3,
+            cursor: 'pointer',
+            lineHeight: 1.4,
+          }}
+        >
+          +
+        </button>
+      )}
+      {onCollapse && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCollapse(); }}
+          title="下位ノードを折りたたむ"
+          style={{
+            background: '#3a1a1a',
+            border: '1px solid #cc444466',
+            color: '#cc6666',
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '1px 7px',
+            borderRadius: 3,
+            cursor: 'pointer',
+            lineHeight: 1.4,
+          }}
+        >
+          −
+        </button>
+      )}
+    </div>
+  );
+}

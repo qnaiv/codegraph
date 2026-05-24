@@ -6,8 +6,8 @@ interface SObjectNodeProps extends NodeProps {
   data: {
     graphNode: SObjectNodeData;
     isDimmed?: boolean;
-    hiddenNeighborCount?: number;
-    onExpandNode?: () => void;
+    onExpandDownstream?: () => void;
+    onCollapseDownstream?: () => void;
   };
 }
 
@@ -20,7 +20,7 @@ function objectIcon(node: SObjectNodeData): string {
 export const SObjectNodeComponent = memo(function SObjectNodeComponent({
   data,
 }: SObjectNodeProps) {
-  const { graphNode: node, isDimmed, hiddenNeighborCount, onExpandNode } = data;
+  const { graphNode: node, isDimmed, onExpandDownstream, onCollapseDownstream } = data;
 
   const lookupCount = node.fields.filter(
     (f) => f.fieldType === 'Lookup' || f.fieldType === 'MasterDetail'
@@ -57,8 +57,11 @@ export const SObjectNodeComponent = memo(function SObjectNodeComponent({
           {node.isCustom && <Badge color="#a8d8a8" text="custom" />}
           {node.isCustomMetadata && <Badge color="#d8c87a" text="mdt" />}
         </div>
-        {(hiddenNeighborCount ?? 0) > 0 && (
-          <ExpandBadge count={hiddenNeighborCount!} onExpand={onExpandNode!} />
+        {(onExpandDownstream || onCollapseDownstream) && (
+          <ExpandCollapseButtons
+            onExpand={onExpandDownstream}
+            onCollapse={onCollapseDownstream}
+          />
         )}
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: '#4a9d4a' }} />
@@ -66,25 +69,53 @@ export const SObjectNodeComponent = memo(function SObjectNodeComponent({
   );
 });
 
-function ExpandBadge({ count, onExpand }: { count: number; onExpand: () => void }) {
+function ExpandCollapseButtons({
+  onExpand,
+  onCollapse,
+}: {
+  onExpand?: () => void;
+  onCollapse?: () => void;
+}) {
   return (
-    <div
-      onClick={(e) => { e.stopPropagation(); onExpand(); }}
-      style={{
-        marginTop: 4,
-        display: 'inline-flex',
-        alignItems: 'center',
-        background: '#cc660022',
-        border: '1px solid #cc660066',
-        color: '#cc9944',
-        fontSize: 9,
-        padding: '2px 6px',
-        borderRadius: 3,
-        cursor: 'pointer',
-        userSelect: 'none',
-      }}
-    >
-      +{count} more
+    <div style={{ marginTop: 4, display: 'flex', gap: 4 }}>
+      {onExpand && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onExpand(); }}
+          title="下位ノードを1ホップ展開"
+          style={{
+            background: '#1a3a1a',
+            border: '1px solid #4a9d4a66',
+            color: '#4a9d4a',
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '1px 7px',
+            borderRadius: 3,
+            cursor: 'pointer',
+            lineHeight: 1.4,
+          }}
+        >
+          +
+        </button>
+      )}
+      {onCollapse && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onCollapse(); }}
+          title="下位ノードを折りたたむ"
+          style={{
+            background: '#3a1a1a',
+            border: '1px solid #cc444466',
+            color: '#cc6666',
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '1px 7px',
+            borderRadius: 3,
+            cursor: 'pointer',
+            lineHeight: 1.4,
+          }}
+        >
+          −
+        </button>
+      )}
     </div>
   );
 }

@@ -66,8 +66,8 @@ function toRFNode(
   isReferenced: boolean,
   isAnySelected: boolean,
   onOpenFile: () => void,
-  hiddenNeighborCount: number,
-  onExpandNode: () => void,
+  onExpandDownstream: (() => void) | undefined,
+  onCollapseDownstream: (() => void) | undefined,
 ): Node {
   const isDimmed = isAnySelected && !isSelected && !isReferenced;
   const isHighlighted = isSelected || isReferenced;
@@ -81,8 +81,8 @@ function toRFNode(
       isDimmed,
       isHighlighted,
       onOpenFile,
-      hiddenNeighborCount,
-      onExpandNode,
+      onExpandDownstream,
+      onCollapseDownstream,
     },
     style: isHighlighted
       ? { boxShadow: `0 0 0 2px ${isSelected ? '#ff8c00' : '#ffd700'}`, borderRadius: 8 }
@@ -156,12 +156,14 @@ export function CodeGraphCanvas() {
     viewState,
     progress,
     focusRootId,
-    focusVisibleIds,
+    focusUpstreamIds,
+    focusExpandedIds,
     focusBoundaryIds,
     searchQuery,
     enterFocus,
-    collapseFocus,
-    expandFocusNode,
+    expandFocusDownstream,
+    collapseFocusDownstream,
+    expandFocusAll,
     exitFocus,
     setSearchQuery,
   } = useGraphStore();
@@ -192,6 +194,21 @@ export function CodeGraphCanvas() {
 
   const baseNodeIds = useMemo(() => new Set(baseNodes.map((n) => n.id)), [baseNodes]);
 
+  // Compute focus visible set from upstream + expanded downstream
+  const focusVisibleIds = useMemo(() => {
+    if (!focusRootId) return new Set<string>();
+    const visible = new Set<string>([focusRootId]);
+    for (const id of focusUpstreamIds) visible.add(id);
+    for (const expandedId of focusExpandedIds) {
+      for (const e of gEdges) {
+        if (e.sourceId === expandedId && focusBoundaryIds.has(e.targetId)) {
+          visible.add(e.targetId);
+        }
+      }
+    }
+    return visible;
+  }, [focusRootId, focusUpstreamIds, focusExpandedIds, focusBoundaryIds, gEdges]);
+
   // Filtered nodes: apply focus or search on top of base
   const filteredNodes = useMemo(() => {
     if (focusRootId) return baseNodes.filter((n) => focusVisibleIds.has(n.id));
@@ -209,25 +226,26 @@ export function CodeGraphCanvas() {
     [gEdges, filteredNodeIds]
   );
 
-  // +N badge: for each visible node, count neighbors that exist in boundary but are hidden
-  const hiddenNeighborCounts = useMemo(() => {
-    if (!focusRootId) return new Map<string, number>();
-    const counts = new Map<string, number>();
+  // Per-node expand/collapse state in focus mode
+  const nodeExpandState = useMemo(() => {
+    if (!focusRootId) return new Map<string, { canExpand: boolean; canCollapse: boolean }>();
+    const map = new Map<string, { canExpand: boolean; canCollapse: boolean }>();
     for (const n of filteredNodes) {
-      let hidden = 0;
-      for (const e of gEdges) {
-        const neighbor =
-          e.sourceId === n.id ? e.targetId
-          : e.targetId === n.id ? e.sourceId
-          : null;
-        if (neighbor && focusBoundaryIds.has(neighbor) && !focusVisibleIds.has(neighbor)) {
-          hidden++;
-        }
-      }
-      if (hidden > 0) counts.set(n.id, hidden);
+      const hasHiddenDownstream = gEdges.some(
+        (e) => e.sourceId === n.id && focusBoundaryIds.has(e.targetId) && !focusVisibleIds.has(e.targetId)
+      );
+      const isExpanded = focusExpandedIds.has(n.id);
+      const hasAnyDownstreamInBoundary = gEdges.some(
+        (e) => e.sourceId === n.id && focusBoundaryIds.has(e.targetId)
+      );
+      if (!hasAnyDownstreamInBoundary) continue;
+      map.set(n.id, {
+        canExpand: hasHiddenDownstream,
+        canCollapse: isExpanded,
+      });
     }
-    return counts;
-  }, [focusRootId, filteredNodes, gEdges, focusBoundaryIds, focusVisibleIds]);
+    return map;
+  }, [focusRootId, filteredNodes, gEdges, focusBoundaryIds, focusVisibleIds, focusExpandedIds]);
 
   // Referenced nodes for edge highlight (only in non-focus mode)
   const referencedNodeIds = useMemo(() => {
@@ -280,6 +298,7 @@ export function CodeGraphCanvas() {
           postMessage({ type: 'OPEN_FILE', payload: { uri: gNode.uri, range: gNode.range } });
         }
       };
+      const expandState = nodeExpandState.get(rfNode.id);
       return toRFNode(
         gNode,
         rfNode.position,
@@ -287,11 +306,11 @@ export function CodeGraphCanvas() {
         isReferenced,
         isAnySelectedForDim,
         onOpenFile,
-        hiddenNeighborCounts.get(rfNode.id) ?? 0,
-        () => expandFocusNode(rfNode.id),
+        expandState?.canExpand ? () => expandFocusDownstream(rfNode.id) : undefined,
+        expandState?.canCollapse ? () => collapseFocusDownstream(rfNode.id) : undefined,
       );
     }),
-  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, isAnySelectedForDim, hiddenNeighborCounts, expandFocusNode]);
+  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, isAnySelectedForDim, nodeExpandState, expandFocusDownstream, collapseFocusDownstream]);
 
   const rfEdges: Edge[] = useMemo(() =>
     filteredEdges.map((e) => toRFEdge(e, highlightedEdgeIds.includes(e.id), isAnySelectedForDim)),
@@ -439,7 +458,7 @@ export function CodeGraphCanvas() {
               </span>
               <span>{filteredNodes.length} ノード表示中</span>
               <button
-                onClick={collapseFocus}
+                onClick={expandFocusAll}
                 style={{
                   pointerEvents: 'all',
                   background: '#1e1e2e',
@@ -451,7 +470,7 @@ export function CodeGraphCanvas() {
                   cursor: 'pointer',
                 }}
               >
-                折りたたむ
+                すべて展開
               </button>
               <span style={{ color: '#444' }}>ESCで解除</span>
             </>
