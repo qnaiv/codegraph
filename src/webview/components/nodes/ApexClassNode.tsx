@@ -52,6 +52,7 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
       <Handle type="target" position={Position.Top} style={{ background: borderColor }} />
       <div
         style={{
+          position: 'relative',
           background: '#1a2f4a',
           border: `1.5px solid ${borderColor}`,
           borderRadius: 8,
@@ -101,8 +102,11 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
             <Badge color="#9d4a9d" text="global" />
           )}
         </div>
+
+        {/* +/- buttons: float just below the card, outside it, near the source handle */}
         {(onExpandDownstream || onCollapseDownstream) && (
           <ExpandCollapseButtons
+            color={borderColor}
             onExpand={onExpandDownstream}
             onCollapse={onCollapseDownstream}
           />
@@ -114,28 +118,39 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
 });
 
 function ExpandCollapseButtons({
+  color,
   onExpand,
   onCollapse,
 }: {
+  color: string;
   onExpand?: () => void;
   onCollapse?: () => void;
 }) {
   return (
-    <div style={{ marginTop: 4, display: 'flex', gap: 4 }}>
+    <div style={{
+      position: 'absolute',
+      top: '100%',
+      left: '50%',
+      transform: 'translateX(-50%)',
+      paddingTop: 3,
+      display: 'flex',
+      gap: 4,
+      zIndex: 10,
+    }}>
       {onExpand && (
         <button
           onClick={(e) => { e.stopPropagation(); onExpand(); }}
           title="下位ノードを1ホップ展開"
           style={{
-            background: '#1a3a1a',
-            border: '1px solid #4a9d4a66',
-            color: '#4a9d4a',
+            background: '#0a0c14',
+            border: `1px solid ${color}88`,
+            color,
             fontSize: 11,
             fontWeight: 700,
-            padding: '1px 7px',
+            padding: '0px 6px',
             borderRadius: 3,
             cursor: 'pointer',
-            lineHeight: 1.4,
+            lineHeight: 1.6,
           }}
         >
           +
@@ -146,15 +161,15 @@ function ExpandCollapseButtons({
           onClick={(e) => { e.stopPropagation(); onCollapse(); }}
           title="下位ノードを折りたたむ"
           style={{
-            background: '#3a1a1a',
-            border: '1px solid #cc444466',
+            background: '#0a0c14',
+            border: '1px solid #cc444488',
             color: '#cc6666',
             fontSize: 11,
             fontWeight: 700,
-            padding: '1px 7px',
+            padding: '0px 6px',
             borderRadius: 3,
             cursor: 'pointer',
-            lineHeight: 1.4,
+            lineHeight: 1.6,
           }}
         >
           −
