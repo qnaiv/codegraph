@@ -7,6 +7,8 @@ interface ApexTriggerNodeProps extends NodeProps {
     graphNode: ApexTriggerNodeData;
     isDimmed?: boolean;
     onOpenFile?: () => void;
+    hiddenNeighborCount?: number;
+    onExpandNode?: () => void;
   };
 }
 
@@ -22,7 +24,7 @@ function eventColor(event: TriggerEvent): string {
 export const ApexTriggerNodeComponent = memo(function ApexTriggerNodeComponent({
   data,
 }: ApexTriggerNodeProps) {
-  const { graphNode: node, isDimmed, onOpenFile } = data;
+  const { graphNode: node, isDimmed, onOpenFile, hiddenNeighborCount, onExpandNode } = data;
 
   return (
     <>
@@ -67,6 +69,26 @@ export const ApexTriggerNodeComponent = memo(function ApexTriggerNodeComponent({
             </span>
           ))}
         </div>
+        {(hiddenNeighborCount ?? 0) > 0 && (
+          <div
+            onClick={(e) => { e.stopPropagation(); onExpandNode?.(); }}
+            style={{
+              marginTop: 4,
+              display: 'inline-flex',
+              alignItems: 'center',
+              background: '#cc660022',
+              border: '1px solid #cc660066',
+              color: '#cc9944',
+              fontSize: 9,
+              padding: '2px 6px',
+              borderRadius: 3,
+              cursor: 'pointer',
+              userSelect: 'none',
+            }}
+          >
+            +{hiddenNeighborCount} more
+          </div>
+        )}
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: '#9d4a9d' }} />
     </>

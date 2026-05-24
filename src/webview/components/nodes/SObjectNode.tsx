@@ -6,6 +6,8 @@ interface SObjectNodeProps extends NodeProps {
   data: {
     graphNode: SObjectNodeData;
     isDimmed?: boolean;
+    hiddenNeighborCount?: number;
+    onExpandNode?: () => void;
   };
 }
 
@@ -18,7 +20,7 @@ function objectIcon(node: SObjectNodeData): string {
 export const SObjectNodeComponent = memo(function SObjectNodeComponent({
   data,
 }: SObjectNodeProps) {
-  const { graphNode: node, isDimmed } = data;
+  const { graphNode: node, isDimmed, hiddenNeighborCount, onExpandNode } = data;
 
   const lookupCount = node.fields.filter(
     (f) => f.fieldType === 'Lookup' || f.fieldType === 'MasterDetail'
@@ -55,11 +57,37 @@ export const SObjectNodeComponent = memo(function SObjectNodeComponent({
           {node.isCustom && <Badge color="#a8d8a8" text="custom" />}
           {node.isCustomMetadata && <Badge color="#d8c87a" text="mdt" />}
         </div>
+        {(hiddenNeighborCount ?? 0) > 0 && (
+          <ExpandBadge count={hiddenNeighborCount!} onExpand={onExpandNode!} />
+        )}
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: '#4a9d4a' }} />
     </>
   );
 });
+
+function ExpandBadge({ count, onExpand }: { count: number; onExpand: () => void }) {
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); onExpand(); }}
+      style={{
+        marginTop: 4,
+        display: 'inline-flex',
+        alignItems: 'center',
+        background: '#cc660022',
+        border: '1px solid #cc660066',
+        color: '#cc9944',
+        fontSize: 9,
+        padding: '2px 6px',
+        borderRadius: 3,
+        cursor: 'pointer',
+        userSelect: 'none',
+      }}
+    >
+      +{count} more
+    </div>
+  );
+}
 
 function Badge({ color, text }: { color: string; text: string }) {
   return (
