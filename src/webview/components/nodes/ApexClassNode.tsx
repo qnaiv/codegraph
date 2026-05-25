@@ -229,6 +229,29 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
               ≡
             </button>
           )}
+          {(isPendingExpansion || neighborCount > 0) && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onExpandGraph?.(); }}
+              disabled={isPendingExpansion || !onExpandGraph}
+              title={isPendingExpansion ? '展開中…' : `${neighborCount} 件の隣接ノードを展開`}
+              style={{
+                background: isPendingExpansion ? `${borderColor}22` : `${borderColor}33`,
+                border: `1px solid ${borderColor}88`,
+                color: isPendingExpansion ? '#888' : borderColor,
+                fontSize: 9,
+                fontWeight: 700,
+                padding: '1px 5px',
+                borderRadius: 10,
+                cursor: isPendingExpansion || !onExpandGraph ? 'default' : 'pointer',
+                lineHeight: 1.5,
+                minWidth: 22,
+                textAlign: 'center',
+                flexShrink: 0,
+              }}
+            >
+              {isPendingExpansion ? '…' : `+${neighborCount}`}
+            </button>
+          )}
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
@@ -250,15 +273,6 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
             color={borderColor}
             onExpand={onExpandDownstream}
             onCollapse={onCollapseDownstream}
-          />
-        )}
-
-        {(isPendingExpansion || neighborCount > 0) && (
-          <ExpandGraphBadge
-            count={neighborCount}
-            isPending={isPendingExpansion}
-            color={borderColor}
-            onClick={onExpandGraph}
           />
         )}
       </div>
@@ -343,45 +357,6 @@ function MethodRow({
         </div>
       )}
     </div>
-  );
-}
-
-function ExpandGraphBadge({
-  count,
-  isPending,
-  color,
-  onClick,
-}: {
-  count: number;
-  isPending: boolean;
-  color: string;
-  onClick?: () => void;
-}) {
-  return (
-    <button
-      onClick={(e) => { e.stopPropagation(); onClick?.(); }}
-      disabled={isPending || !onClick}
-      title={isPending ? '展開中…' : `${count} 件の隣接ノードを展開`}
-      style={{
-        position: 'absolute',
-        top: 4,
-        right: 4,
-        background: isPending ? `${color}33` : `${color}22`,
-        border: `1px solid ${color}88`,
-        color: isPending ? '#888' : color,
-        fontSize: 9,
-        fontWeight: 700,
-        padding: '1px 5px',
-        borderRadius: 10,
-        cursor: isPending || !onClick ? 'default' : 'pointer',
-        lineHeight: 1.5,
-        minWidth: 22,
-        textAlign: 'center',
-        pointerEvents: 'all',
-      }}
-    >
-      {isPending ? '…' : `+${count}`}
-    </button>
   );
 }
 
