@@ -4,6 +4,26 @@
  */
 public with sharing class AccountService extends BaseService {
 
+    /** Account の集計情報をまとめる DTO クラス */
+    public class AccountSummary {
+        public String name;
+        public Decimal annualRevenue;
+        public Integer contactCount;
+
+        public AccountSummary(String name, Decimal revenue) {
+            this.name = name;
+            this.annualRevenue = revenue;
+            this.contactCount = 0;
+        }
+    }
+
+    /** Account の顧客ランクを示す列挙型 */
+    public enum AccountTier {
+        STANDARD,
+        PREMIUM,
+        ENTERPRISE
+    }
+
     private ContactService contactService;
     private NotificationService notificationService;
 
@@ -45,6 +65,19 @@ public with sharing class AccountService extends BaseService {
             WHERE Id = :accountId
             LIMIT 1
         ];
+    }
+
+    /**
+     * Account リストを AccountSummary に変換して返す。
+     * @param accounts 変換対象の Account リスト
+     * @return AccountSummary リスト
+     */
+    public static List<AccountSummary> toSummaries(List<Account> accounts) {
+        List<AccountSummary> result = new List<AccountSummary>();
+        for (Account acc : accounts) {
+            result.add(new AccountSummary(acc.Name, acc.AnnualRevenue));
+        }
+        return result;
     }
 
     /**

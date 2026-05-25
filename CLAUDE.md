@@ -17,7 +17,19 @@ npm run check   # lint + typecheck + test + build を一括実行
 
 ローカルで `npm run check` が通れば CI も通る。lint エラー・型エラーが残ったまま push しない。
 
-### 3. 1 issue 1 ブランチ
+### 3. 機能追加・変更時はサンプルプロジェクトを更新する
+
+新機能を実装したら、`sample-project/` のサンプル Apex コードにその機能が確認できる実装を追加すること。
+また、`apexParseUtils.integration.test.ts` に統合テストを追加し、サンプルファイルを使ってパーサーが正しく動作することを検証すること。
+
+```
+実装 → sample-project/ を更新 → 統合テストを追加 → npm run test（グリーン確認）
+```
+
+- サンプルクラスは現実の Salesforce パターンに沿った実装にすること
+- 統合テストはサンプルファイルの実際の内容に基づいて期待値を書くこと（ハードコードした文字列でよい）
+
+### 4. 1 issue 1 ブランチ
 
 - issue 1件につきブランチを1本作成する
 - ブランチ名: `claude/issue-{番号}-{短い説明}` （例: `claude/issue-29-focus-search`）
