@@ -765,6 +765,7 @@ export async function buildSingleNodeSnapshot(
   onProgress?.('ノードを構築中…', 40);
 
   const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
   let nodeId: string;
 
   if ('targetSObject' in parsed) {
@@ -776,6 +777,21 @@ export async function buildSingleNodeSnapshot(
     const classNode = buildClassNode(parsed, lspSymbols);
     nodes.push(classNode);
     nodeId = classNode.id;
+
+    // インナークラスノードと inner-class エッジ
+    const innerClassIds: string[] = [];
+    for (const inner of parsed.innerClasses ?? []) {
+      const innerNode = buildInnerClassNode(inner, parsed, classNode.id);
+      nodes.push(innerNode);
+      innerClassIds.push(innerNode.id);
+      edges.push({
+        id: `edge:inner-class:${classNode.id}:${innerNode.id}`,
+        kind: 'inner-class',
+        sourceId: classNode.id,
+        targetId: innerNode.id,
+      });
+    }
+    classNode.innerClasses = innerClassIds;
   }
 
   onProgress?.('隣接ノード数を調査中…', 60);
@@ -809,7 +825,7 @@ export async function buildSingleNodeSnapshot(
     version: 1,
     projectRoot: path.basename(workspaceRoot),
     nodes,
-    edges: [],
+    edges,
     annotations: [],
     layoutState: {},
     viewState: defaultViewState,
@@ -897,12 +913,30 @@ export async function buildNeighborNodes(
 
   const newNodes: GraphNode[] = [];
   const newClassNodes = new Map<string, ApexClassNode>();
+  const pendingInnerEdges: GraphEdge[] = [];
+
   await Promise.all(
     [...parsedNewClasses.entries()].map(async ([, parsedClass]) => {
       const lspSymbols = await tryLspDocumentSymbol(parsedClass.uri);
       const classNode = buildClassNode(parsedClass, lspSymbols);
       newClassNodes.set(parsedClass.name, classNode);
       newNodes.push(classNode);
+
+      // インナークラスノードと inner-class エッジ
+      const innerClassIds: string[] = [];
+      for (const inner of parsedClass.innerClasses ?? []) {
+        const innerNode = buildInnerClassNode(inner, parsedClass, classNode.id);
+        newClassNodes.set(`${parsedClass.name}.${inner.name}`, innerNode);
+        newNodes.push(innerNode);
+        innerClassIds.push(innerNode.id);
+        pendingInnerEdges.push({
+          id: `edge:inner-class:${classNode.id}:${innerNode.id}`,
+          kind: 'inner-class',
+          sourceId: classNode.id,
+          targetId: innerNode.id,
+        });
+      }
+      classNode.innerClasses = innerClassIds;
     })
   );
   for (const parsedTrigger of parsedNewTriggers) {
@@ -925,6 +959,9 @@ export async function buildNeighborNodes(
   const addEdge = (edge: GraphEdge) => {
     if (!edgeSet.has(edge.id)) { edgeSet.add(edge.id); newEdges.push(edge); }
   };
+
+  // インナークラスエッジをマージ
+  for (const e of pendingInnerEdges) addEdge(e);
 
   // target → 新ノード（前進参照）
   for (const ref of parsed.referencedClasses) {
