@@ -153,7 +153,7 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
                   key={m.id}
                   method={m}
                   isSelected={selectedMethodId === m.id}
-                  detail={selectedMethodId !== null && selectedMethodId !== undefined}
+                  detail={selectedMethodId === m.id}
                   borderColor={borderColor}
                   onClick={onMethodClick}
                 />

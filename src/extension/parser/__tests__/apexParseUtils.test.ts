@@ -277,6 +277,64 @@ describe('parseMethods', () => {
     expect(getAccounts).toBeDefined();
     expect(getAccounts?.annotations.map((a) => a.name)).toContain('AuraEnabled');
   });
+
+  it('extracts /** */ block doc comment', () => {
+    const src = `
+      public class Foo {
+        /**
+         * Fetches all active accounts.
+         * @param industry filter value
+         */
+        public static List<Account> getActive(String industry) {
+          return [SELECT Id FROM Account];
+        }
+      }
+    `;
+    const methods = parseMethods(src);
+    const m = methods.find((x) => x.name === 'getActive');
+    expect(m?.docComment).toBe('Fetches all active accounts.');
+  });
+
+  it('extracts // single-line doc comment', () => {
+    const src = `
+      public class Foo {
+        // メールアドレスを小文字に正規化して更新する
+        public void syncEmails(List<Contact> contacts) {}
+      }
+    `;
+    const methods = parseMethods(src);
+    const m = methods.find((x) => x.name === 'syncEmails');
+    expect(m?.docComment).toBe('メールアドレスを小文字に正規化して更新する');
+  });
+
+  it('returns undefined docComment when no comment precedes method', () => {
+    const src = `
+      public class Foo {
+        public void noComment() {}
+      }
+    `;
+    const methods = parseMethods(src);
+    const m = methods.find((x) => x.name === 'noComment');
+    expect(m?.docComment).toBeUndefined();
+  });
+
+  it('strips @param / @return lines from block comment', () => {
+    const src = `
+      public class Foo {
+        /**
+         * Creates an order record.
+         * @param accountId account ID
+         * @return created order
+         */
+        public static Order__c createOrder(Id accountId) { return null; }
+      }
+    `;
+    const methods = parseMethods(src);
+    const m = methods.find((x) => x.name === 'createOrder');
+    expect(m?.docComment).toBe('Creates an order record.');
+    expect(m?.docComment).not.toContain('@param');
+    expect(m?.docComment).not.toContain('@return');
+  });
 });
 
 // -----------------------------------------------------------------------

@@ -7,6 +7,11 @@ public with sharing class ContactService extends BaseService {
         super('ContactService');
     }
 
+    /**
+     * Account に紐づく Contact を姓・名の昇順で返す
+     * @param accountId 対象 Account ID
+     * @return Contact リスト
+     */
     @AuraEnabled(cacheable=true)
     public static List<Contact> getContactsByAccount(Id accountId) {
         return [
@@ -18,6 +23,10 @@ public with sharing class ContactService extends BaseService {
         ];
     }
 
+    /**
+     * Contact を一括インサートする。
+     * DML 例外が発生した場合はエラーをログに記録した上で再スローする。
+     */
     public void createContacts(List<Contact> contacts) {
         try {
             insert contacts;
@@ -27,6 +36,7 @@ public with sharing class ContactService extends BaseService {
         }
     }
 
+    // メールアドレスを小文字に正規化してから一括更新する
     public void syncContactEmails(List<Contact> contacts) {
         List<Contact> toUpdate = new List<Contact>();
         for (Contact c : contacts) {
@@ -44,6 +54,9 @@ public with sharing class ContactService extends BaseService {
         delete contacts;
     }
 
+    /**
+     * 姓が空でない Contact のみ有効とみなす
+     */
     public override Boolean validate(SObject record) {
         Contact c = (Contact) record;
         return c != null && String.isNotBlank(c.LastName);

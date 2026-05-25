@@ -10,14 +10,21 @@ public abstract with sharing class BaseService implements IService {
         this.serviceName = name;
     }
 
+    /**
+     * サービスを初期化し、起動ログを出力する
+     */
     public void init() {
         System.debug('[' + serviceName + '] initialized');
     }
 
+    /**
+     * レコードが null でなければ有効とみなす（サブクラスでオーバーライド可能）
+     */
     public virtual Boolean validate(SObject record) {
         return record != null;
     }
 
+    // エラーをサービス名プレフィックス付きで ERROR レベルのデバッグログに記録する
     protected void logError(String message, Exception e) {
         System.debug(LoggingLevel.ERROR, '[' + serviceName + '] ' + message + ': ' + e.getMessage());
     }

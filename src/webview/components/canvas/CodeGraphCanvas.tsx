@@ -53,10 +53,11 @@ const METHOD_ITEM_DETAIL_H   = 40;   // rich row (with doc comment line)
 export const MAX_METHOD_SCROLL_H = 280; // max scrollable method area
 const CONTAINER_PAD_B        = 6;
 
-function containerSize(methodCount: number, detail = false) {
-  const rowH = detail ? METHOD_ITEM_DETAIL_H : METHOD_ITEM_H;
+function containerSize(methodCount: number, detailCount = 0) {
+  // detailCount rows at DETAIL_H, remainder at compact H
+  const compactCount = Math.max(0, methodCount - detailCount);
   const methodAreaH = methodCount > 0
-    ? Math.min(methodCount * rowH, MAX_METHOD_SCROLL_H)
+    ? Math.min(compactCount * METHOD_ITEM_H + detailCount * METHOD_ITEM_DETAIL_H, MAX_METHOD_SCROLL_H)
     : 0;
   return { width: CONTAINER_W, height: Math.max(CONTAINER_HEADER_H + methodAreaH + CONTAINER_PAD_B, 80) };
 }
@@ -365,7 +366,9 @@ export function CodeGraphCanvas() {
         const shownCount = (isCalleeClass && methodFocusInfo)
           ? publicMethods.filter(m => methodFocusInfo.calleeMethodIds.has(m.id)).length
           : publicMethods.length;
-        const { width, height } = containerSize(shownCount, methodFocusInfo !== null);
+        // Only the one selected method row is detail-sized; all others stay compact
+        const detailCount = (selectedMethodId && publicMethods.some(m => m.id === selectedMethodId)) ? 1 : 0;
+        const { width, height } = containerSize(shownCount, detailCount);
         topLevelNodes.push({
           id: n.id,
           type: 'apexClass',

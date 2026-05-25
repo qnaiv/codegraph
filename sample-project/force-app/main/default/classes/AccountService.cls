@@ -7,12 +7,19 @@ public with sharing class AccountService extends BaseService {
     private ContactService contactService;
     private NotificationService notificationService;
 
+    // コンストラクタ：依存サービスをインスタンス化して保持する
     public AccountService() {
         super('AccountService');
         this.contactService = new ContactService();
         this.notificationService = new NotificationService();
     }
 
+    /**
+     * Active な Account を業界でフィルタして最大200件取得する。
+     * industry が null の場合は全件を返す。
+     * @param industry 業界名（null 可）
+     * @return アカウントリスト（Name 昇順）
+     */
     @AuraEnabled(cacheable=true)
     public static List<Account> getActiveAccounts(String industry) {
         return [
@@ -25,6 +32,10 @@ public with sharing class AccountService extends BaseService {
         ];
     }
 
+    /**
+     * 指定 Account ID に紐づく Contact サブクエリを含む Account を1件取得する
+     * @param accountId 取得対象の Account ID
+     */
     @AuraEnabled
     public static Account getAccountWithContacts(Id accountId) {
         return [
@@ -36,6 +47,9 @@ public with sharing class AccountService extends BaseService {
         ];
     }
 
+    /**
+     * 年間収益を指定倍率で更新し、完了後に NotificationService で変更通知を送信する
+     */
     public void updateAnnualRevenue(List<Account> accounts, Decimal revenueMultiplier) {
         List<Account> toUpdate = new List<Account>();
         for (Account acc : accounts) {
@@ -50,6 +64,7 @@ public with sharing class AccountService extends BaseService {
         }
     }
 
+    // アカウントを一括削除（無効化）する。削除前に権限チェックを行うこと
     public void deactivateAccounts(Set<Id> accountIds) {
         List<Account> accounts = [
             SELECT Id, Name FROM Account WHERE Id IN :accountIds
@@ -57,10 +72,16 @@ public with sharing class AccountService extends BaseService {
         delete accounts;
     }
 
+    // コメントなし：関連 Contact を ContactService 経由で取得するだけの委譲メソッド
     public List<Contact> getRelatedContacts(Id accountId) {
         return contactService.getContactsByAccount(accountId);
     }
 
+    /**
+     * フロー・プロセスビルダーからアーカイブ操作を呼び出すための InvocableMethod。
+     * 対象アカウントを物理削除するため運用上は十分な注意が必要。取り消し不可。
+     * @param accountIds アーカイブ対象の Account ID リスト
+     */
     @InvocableMethod(label='Archive Account')
     public static void archiveAccounts(List<Id> accountIds) {
         List<Account> accounts = [SELECT Id FROM Account WHERE Id IN :accountIds];
