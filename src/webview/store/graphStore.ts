@@ -80,6 +80,7 @@ interface GraphStore {
   clearHighlight: () => void;
   updateFilter: (patch: Partial<NodeFilter>) => void;
   updateNodePosition: (nodeId: string, pos: XYPosition) => void;
+  setLayoutState: (positions: Record<string, XYPosition>) => void;
   setProgress: (progress: Progress) => void;
   toggleNodeMethodLevel: (nodeId: string) => void;
   selectMethod: (methodId: string) => void;
@@ -202,6 +203,10 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   updateNodePosition(nodeId, pos) {
     set((s) => ({ layoutState: { ...s.layoutState, [nodeId]: pos } }));
+  },
+
+  setLayoutState(positions) {
+    set((s) => ({ layoutState: { ...s.layoutState, ...positions } }));
   },
 
   setProgress(progress) {
