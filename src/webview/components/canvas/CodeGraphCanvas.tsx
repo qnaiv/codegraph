@@ -269,16 +269,6 @@ export function CodeGraphCanvas() {
       }
     }
 
-    // Fallback: always show class-level outgoing neighbors so nodes don't
-    // disappear when method-level call edges haven't been detected
-    for (const e of gEdges) {
-      if (e.sourceId === sourceClassId &&
-          !e.sourceId.startsWith('method:') &&
-          !e.targetId.startsWith('method:')) {
-        calleeClassIds.add(e.targetId);
-      }
-    }
-
     return { sourceClassId, calleeClassIds, calleeMethodIds };
   }, [selectedMethodId, gEdges]);
 
@@ -341,22 +331,6 @@ export function CodeGraphCanvas() {
             targetHandle: isMethodTarget ? e.targetId : undefined,
           },
         });
-      }
-    }
-
-    // Fallback: when no method-level edges were found, use class-level outgoing edges
-    if (result.length === 0) {
-      for (const e of gEdges) {
-        if (e.sourceId === methodFocusInfo.sourceClassId &&
-            !e.sourceId.startsWith('method:') &&
-            !e.targetId.startsWith('method:') &&
-            filteredNodeIds.has(e.targetId)) {
-          const edgeId = `method-focus-cls:${e.id}`;
-          if (!seen.has(edgeId)) {
-            seen.add(edgeId);
-            result.push({ ...e, id: edgeId });
-          }
-        }
       }
     }
 
@@ -499,6 +473,24 @@ export function CodeGraphCanvas() {
     setPendingExpansion(nodeId);
     postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: gNode.uri, alreadyIncludedUris } });
   }, [gNodes, setPendingExpansion]);
+
+  // Auto-expand source class neighbors when a method is focused and +N nodes are unloaded
+  React.useEffect(() => {
+    if (!selectedMethodId) return;
+    const sourceClassId = classIdFromMethodId(selectedMethodId);
+    const { neighborCounts: counts, nodes: currentNodes, pendingExpansionNodeId: pending } = useGraphStore.getState();
+    if (pending) return;
+    const count = counts[sourceClassId] ?? 0;
+    if (count <= 0) return;
+    const gNode = currentNodes.find((n) => n.id === sourceClassId);
+    if (!gNode || !hasLocation(gNode)) return;
+    const alreadyIncludedUris = currentNodes
+      .filter((n) => hasLocation(n))
+      .map((n) => (n as { uri: string }).uri);
+    useGraphStore.getState().setPendingExpansion(sourceClassId);
+    postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: (gNode as { uri: string }).uri, alreadyIncludedUris } });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedMethodId]); // fire only when the focused method changes
 
   // Method click callback
   const handleMethodClick = useCallback((methodId: string) => {

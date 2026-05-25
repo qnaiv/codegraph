@@ -241,6 +241,17 @@ export function extractMethodCalls(
   ownMethodNames: ReadonlySet<string>,
 ): MethodCallsResult[] {
   const results: MethodCallsResult[] = [];
+
+  // Pre-scan the full source for type declarations so class-level fields
+  // (e.g. `private ContactService contactService;`) are available as a base
+  // type map for every method body, not just local variable declarations.
+  const classFieldTypeMap = new Map<string, string>();
+  const fieldDeclRe = /\b([A-Z]\w*)\s+([a-z_]\w*)\s*(?:[=;{,[])/g;
+  let fd: RegExpExecArray | null;
+  while ((fd = fieldDeclRe.exec(source)) !== null) {
+    classFieldTypeMap.set(fd[2], fd[1]);
+  }
+
   const re = new RegExp(METHOD_RE.source, 'gm');
   const seen = new Set<string>();
   let m: RegExpExecArray | null;
@@ -272,12 +283,12 @@ export function extractMethodCalls(
       crossClassCalls.push({ targetClass: cc[1], targetMethod: cc[2] });
     }
 
-    // Instance calls via local variable type declarations: TypeName varName = ...; varName.method(
+    // Instance calls: seed with class-level fields, then add method-local declarations
     const typeDeclRe = /\b([A-Z]\w*)\s+([a-z_]\w*)\s*(?:[=;{,[])/g;
-    const localTypeMap = new Map<string, string>(); // varName → TypeName
+    const localTypeMap = new Map(classFieldTypeMap); // includes class-level fields
     let td: RegExpExecArray | null;
     while ((td = typeDeclRe.exec(body)) !== null) {
-      localTypeMap.set(td[2], td[1]);
+      localTypeMap.set(td[2], td[1]); // local vars override same-named fields
     }
     // Also extract from method parameters (TypeName param, ...)
     const paramMatch = m[0].match(/\(([^)]*)\)/);
