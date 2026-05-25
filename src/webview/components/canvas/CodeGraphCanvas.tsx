@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useMemo, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -353,7 +353,9 @@ export function CodeGraphCanvas() {
   // Build RF nodes: containers (HTML method list) or flat class nodes
   // No React Flow method child nodes — methods are HTML inside container
   // -----------------------------------------------------------------------
-  const pendingLayoutRef = useRef(false);
+
+  // Cache Dagre-computed positions so onNodeDragStop can save them without re-render loops
+  const dagrePositionsRef = useRef<Record<string, { x: number; y: number }>>({});
 
   const rfNodesBase = useMemo(() => {
     const topLevelNodes: Node[] = [];
@@ -394,26 +396,20 @@ export function CodeGraphCanvas() {
       }
     }
 
-    const needsLayout = !topLevelNodes.some((cn) => layoutState[cn.id]);
-    pendingLayoutRef.current = needsLayout;
+    const needsLayout = topLevelNodes.length > 0 && !topLevelNodes.some((cn) => layoutState[cn.id]);
     if (needsLayout) {
       const rfEdgesForLayout: Edge[] = filteredEdges.map((e) => ({
         id: e.id, source: e.sourceId, target: e.targetId,
       }));
-      return applyDagreLayout(topLevelNodes, rfEdgesForLayout, 'LR');
+      const laidOut = applyDagreLayout(topLevelNodes, rfEdgesForLayout, 'LR');
+      // Store Dagre positions in ref so drag handler can save them without causing re-renders
+      const dagre: Record<string, { x: number; y: number }> = {};
+      for (const n of laidOut) dagre[n.id] = n.position;
+      dagrePositionsRef.current = dagre;
+      return laidOut;
     }
     return topLevelNodes;
   }, [filteredNodes, filteredEdges, layoutState, expandedClassIds, methodFocusInfo, selectedMethodId]);
-
-  // Persist initial Dagre layout after render (must not be called during render)
-  useEffect(() => {
-    if (!pendingLayoutRef.current) return;
-    pendingLayoutRef.current = false;
-    const positions: Record<string, { x: number; y: number }> = {};
-    for (const n of rfNodesBase) positions[n.id] = n.position;
-    useGraphStore.getState().setLayoutState(positions);
-    postMessage({ type: 'SAVE_LAYOUT', payload: { positions } });
-  }, [rfNodesBase]);
 
   // Method click callback
   const handleMethodClick = useCallback((methodId: string) => {
@@ -473,16 +469,18 @@ export function CodeGraphCanvas() {
 
   const onNodesChange = useCallback((changes: NodeChange[]) => {
     setNodes((nds) => applyNodeChanges(changes, nds));
-    const positions: Record<string, { x: number; y: number }> = {};
-    for (const c of changes) {
-      if (c.type === 'position' && c.position) {
-        positions[c.id] = c.position;
-        useGraphStore.getState().updateNodePosition(c.id, c.position);
-      }
-    }
-    if (Object.keys(positions).length > 0) {
-      postMessage({ type: 'SAVE_LAYOUT', payload: { positions } });
-    }
+  }, []);
+
+  // On drag end: persist ALL node positions — Dagre baseline merged with any previously
+  // stored positions, then the final dragged position on top.
+  const onNodeDragStop = useCallback((_: React.MouseEvent, draggedNode: Node) => {
+    const positions: Record<string, { x: number; y: number }> = {
+      ...dagrePositionsRef.current,
+      ...useGraphStore.getState().layoutState,
+      [draggedNode.id]: draggedNode.position,
+    };
+    useGraphStore.getState().setLayoutState(positions);
+    postMessage({ type: 'SAVE_LAYOUT', payload: { positions } });
   }, []);
 
   const onEdgesChange = useCallback(
@@ -531,6 +529,7 @@ export function CodeGraphCanvas() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
+        onNodeDragStop={onNodeDragStop}
         onEdgesChange={onEdgesChange}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
