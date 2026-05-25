@@ -160,12 +160,17 @@ export function CodeGraphCanvas() {
     focusExpandedIds,
     focusBoundaryIds,
     searchQuery,
+    activeFocusLabel,
+    scanDepth,
+    isPinned,
     enterFocus,
     expandFocusDownstream,
     collapseFocusDownstream,
     expandFocusAll,
     exitFocus,
     setSearchQuery,
+    setScanDepth,
+    setIsPinned,
   } = useGraphStore();
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
@@ -430,8 +435,64 @@ export function CodeGraphCanvas() {
         )}
       </div>
 
-      {/* Filter toggles (top right) */}
-      <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', gap: 6 }}>
+      {/* Top-right toolbar */}
+      <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+        {/* フォーカスファイル名 */}
+        {activeFocusLabel ? (
+          <span style={{
+            color: '#4a90d9', fontSize: 11, padding: '3px 8px',
+            background: '#0e1525', border: '1px solid #2a3a5a', borderRadius: 4,
+            maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+          }} title={activeFocusLabel}>
+            {activeFocusLabel}
+          </span>
+        ) : (
+          <span style={{ color: '#444', fontSize: 11, padding: '3px 8px' }}>
+            .cls ファイルを開いてください
+          </span>
+        )}
+
+        {/* 深度セレクター */}
+        <div style={{ display: 'flex', border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
+          {([1, 2, 3] as const).map((d) => (
+            <button
+              key={d}
+              onClick={() => {
+                setScanDepth(d);
+                postMessage({ type: 'SET_SCAN_DEPTH', payload: { depth: d } });
+              }}
+              style={{
+                background: scanDepth === d ? '#1a3a5a' : '#1e1e2e',
+                color: scanDepth === d ? '#cce4f7' : '#666',
+                border: 'none',
+                borderRight: d < 3 ? '1px solid #333' : 'none',
+                padding: '3px 8px', fontSize: 11, cursor: 'pointer',
+              }}
+            >
+              {d}
+            </button>
+          ))}
+        </div>
+
+        {/* 固定トグル */}
+        <button
+          onClick={() => {
+            const next = !isPinned;
+            setIsPinned(next);
+            postMessage({ type: 'PIN_FOCUS', payload: { pinned: next } });
+          }}
+          title={isPinned ? 'エディタ切り替えに追従しない（クリックで追従に戻す）' : 'エディタ切り替えに追従中（クリックで固定）'}
+          style={{
+            background: isPinned ? '#2a1a3a' : '#1e1e2e',
+            color: isPinned ? '#cc88ff' : '#666',
+            border: `1px solid ${isPinned ? '#7a44bb' : '#333'}`,
+            borderRadius: 4, padding: '3px 9px', fontSize: 11, cursor: 'pointer',
+          }}
+        >
+          {isPinned ? '📌 固定中' : '📍 追従中'}
+        </button>
+
+        {/* フィルタートグル */}
         <FilterToggle
           label="テスト非表示"
           active={activeFilters.hideTestClasses}
@@ -442,6 +503,20 @@ export function CodeGraphCanvas() {
           active={activeFilters.hideManagedPackages}
           onToggle={(v) => useGraphStore.getState().updateFilter({ hideManagedPackages: v })}
         />
+
+        {/* 全スキャンボタン */}
+        <button
+          onClick={() => postMessage({ type: 'REFRESH_GRAPH' })}
+          disabled={!!progress}
+          title="ワークスペース全体をスキャン（時間がかかります）"
+          style={{
+            background: '#1e1e2e', color: progress ? '#444' : '#888',
+            border: '1px solid #333', borderRadius: 4,
+            padding: '3px 9px', fontSize: 11, cursor: progress ? 'not-allowed' : 'pointer',
+          }}
+        >
+          ↺ 全スキャン
+        </button>
       </div>
 
       {/* Status bar */}
@@ -476,7 +551,7 @@ export function CodeGraphCanvas() {
             </>
           ) : (
             <>
-              <span>{filteredNodes.length} nodes · {filteredEdges.length} edges</span>
+              <span>{filteredNodes.length} nodes · {filteredEdges.length} edges{activeFocusLabel ? ` · 深度${scanDepth}` : ''}</span>
               {filteredEdges.some((e) => e.kind === 'instantiates' || e.kind === 'calls') && (
                 <span style={{ display: 'flex', gap: 4 }}>
                   {filteredEdges.filter((e) => e.kind === 'instantiates').length > 0 && (
@@ -503,11 +578,12 @@ export function CodeGraphCanvas() {
 
       {isEmpty && (
         <div style={{
-          position: 'absolute', inset: 0, display: 'flex',
-          alignItems: 'center', justifyContent: 'center',
+          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
+          alignItems: 'center', justifyContent: 'center', gap: 8,
           color: '#444', fontSize: 14, pointerEvents: 'none',
         }}>
-          Salesforce プロジェクトを開いてください
+          <span>{activeFocusLabel ? `${activeFocusLabel} の関連ノードが見つかりませんでした` : '.cls または .trigger ファイルをエディタで開いてください'}</span>
+          <span style={{ fontSize: 11 }}>ツールバーの「↺ 全スキャン」でワークスペース全体を表示することもできます</span>
         </div>
       )}
     </div>

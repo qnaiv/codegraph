@@ -66,6 +66,11 @@ interface GraphStore {
   focusBoundaryIds: Set<string>;
   searchQuery: string;
 
+  // オンデマンドスキャン状態
+  activeFocusLabel: string;
+  scanDepth: 1 | 2 | 3;
+  isPinned: boolean;
+
   setSnapshot: (snapshot: GraphSnapshot) => void;
   setGranularity: (level: GranularityLevel) => void;
   setSelectedNodes: (ids: string[]) => void;
@@ -80,6 +85,9 @@ interface GraphStore {
   expandFocusAll: () => void;
   exitFocus: () => void;
   setSearchQuery: (q: string) => void;
+  setActiveFocusLabel: (label: string) => void;
+  setScanDepth: (d: 1 | 2 | 3) => void;
+  setIsPinned: (pinned: boolean) => void;
 }
 
 export const useGraphStore = create<GraphStore>((set, get) => ({
@@ -95,6 +103,9 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   focusExpandedIds: new Set(),
   focusBoundaryIds: new Set(),
   searchQuery: '',
+  activeFocusLabel: '',
+  scanDepth: 2,
+  isPinned: false,
 
   setSnapshot(snapshot) {
     set({
@@ -242,5 +253,17 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   setSearchQuery(q) {
     set({ searchQuery: q });
+  },
+
+  setActiveFocusLabel(label) {
+    set({ activeFocusLabel: label });
+  },
+
+  setScanDepth(d) {
+    set({ scanDepth: d });
+  },
+
+  setIsPinned(pinned) {
+    set({ isPinned: pinned });
   },
 }));

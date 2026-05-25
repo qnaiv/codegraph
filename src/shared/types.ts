@@ -290,7 +290,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'REFERENCES_RESULT'; payload: { nodeId: string; locations: LSPRange[] } }
   | { type: 'DEFINITION_RESULT'; payload: { uri: string; range: LSPRange } }
   | { type: 'PROGRESS'; payload: { stage: string; percent: number } }
-  | { type: 'ERROR'; payload: { message: string; code: string } };
+  | { type: 'ERROR'; payload: { message: string; code: string } }
+  | { type: 'ACTIVE_FILE_CHANGED'; payload: { label: string; uri: string } };
 
 // ============================================================
 // 型ガードユーティリティ
@@ -316,4 +317,6 @@ export type WebviewToExtensionMessage =
   | { type: 'SAVE_ANNOTATION'; payload: Annotation }
   | { type: 'DELETE_ANNOTATION'; payload: { annotationId: string } }
   | { type: 'SAVE_LAYOUT'; payload: { positions: Record<string, XYPosition> } }
-  | { type: 'REFRESH_GRAPH' };
+  | { type: 'REFRESH_GRAPH' }
+  | { type: 'SET_SCAN_DEPTH'; payload: { depth: 1 | 2 | 3 } }
+  | { type: 'PIN_FOCUS'; payload: { pinned: boolean } };
