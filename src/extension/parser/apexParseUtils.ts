@@ -215,10 +215,37 @@ export function extractMethodCalls(
     const body = source.slice(bodyStart, i - 1);
 
     const crossClassCalls: CrossClassCall[] = [];
+
+    // Static-style calls: ClassName.method( where ClassName starts with uppercase
     const crossRe = /\b([A-Z]\w*)\.([a-z_]\w*)\s*\(/g;
     let cc: RegExpExecArray | null;
     while ((cc = crossRe.exec(body)) !== null) {
       crossClassCalls.push({ targetClass: cc[1], targetMethod: cc[2] });
+    }
+
+    // Instance calls via local variable type declarations: TypeName varName = ...; varName.method(
+    const typeDeclRe = /\b([A-Z]\w*)\s+([a-z_]\w*)\s*(?:[=;{,\[])/g;
+    const localTypeMap = new Map<string, string>(); // varName → TypeName
+    let td: RegExpExecArray | null;
+    while ((td = typeDeclRe.exec(body)) !== null) {
+      localTypeMap.set(td[2], td[1]);
+    }
+    // Also extract from method parameters (TypeName param, ...)
+    const paramMatch = m[0].match(/\(([^)]*)\)/);
+    if (paramMatch) {
+      const paramRe = /\b([A-Z]\w*)\s+([a-z_]\w*)/g;
+      let pm: RegExpExecArray | null;
+      while ((pm = paramRe.exec(paramMatch[1])) !== null) {
+        localTypeMap.set(pm[2], pm[1]);
+      }
+    }
+    for (const [varName, typeName] of localTypeMap) {
+      const escaped = varName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const instCallRe = new RegExp(`\\b${escaped}\\.([a-z_]\\w*)\\s*\\(`, 'g');
+      let ic: RegExpExecArray | null;
+      while ((ic = instCallRe.exec(body)) !== null) {
+        crossClassCalls.push({ targetClass: typeName, targetMethod: ic[1] });
+      }
     }
 
     const intraClassCalls: string[] = [];

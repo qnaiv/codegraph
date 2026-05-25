@@ -11,6 +11,7 @@ interface ApexClassNodeProps extends NodeProps {
     isContainer?: boolean;
     onExpandDownstream?: () => void;
     onCollapseDownstream?: () => void;
+    onToggleMethodLevel?: () => void;
   };
 }
 
@@ -32,7 +33,7 @@ const ANNOTATION_ICONS: Record<string, string> = {
 export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
   data,
 }: ApexClassNodeProps) {
-  const { graphNode: node, isDimmed, onOpenFile, isContainer, onExpandDownstream, onCollapseDownstream } = data;
+  const { graphNode: node, isDimmed, onOpenFile, isContainer, onExpandDownstream, onCollapseDownstream, onToggleMethodLevel } = data;
 
   const soqlCount = node.methods.reduce((n, m) => n + m.soqlQueries.length, 0);
   const dmlCount = node.methods.reduce((n, m) => n + m.dmlOperations.length, 0);
@@ -86,12 +87,33 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
                   whiteSpace: 'nowrap',
+                  flex: 1,
+                  minWidth: 0,
                 }}
               >
                 {node.label}
               </span>
               {annotationIcons && (
                 <span style={{ fontSize: 10, flexShrink: 0 }}>{annotationIcons}</span>
+              )}
+              {onToggleMethodLevel && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); onToggleMethodLevel(); }}
+                  title="クラスレベルに折りたたむ"
+                  style={{
+                    background: 'none',
+                    border: `1px solid ${borderColor}66`,
+                    color: borderColor,
+                    fontSize: 10,
+                    lineHeight: 1,
+                    padding: '1px 4px',
+                    borderRadius: 3,
+                    cursor: 'pointer',
+                    flexShrink: 0,
+                  }}
+                >
+                  −
+                </button>
               )}
             </div>
             {node.sharingMode && (
@@ -136,12 +158,33 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
               overflow: 'hidden',
               textOverflow: 'ellipsis',
               whiteSpace: 'nowrap',
+              flex: 1,
+              minWidth: 0,
             }}
           >
             {node.label}
           </span>
           {annotationIcons && (
             <span style={{ fontSize: 10, flexShrink: 0 }}>{annotationIcons}</span>
+          )}
+          {onToggleMethodLevel && node.methods.length > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onToggleMethodLevel(); }}
+              title="メソッドレベルに展開"
+              style={{
+                background: 'none',
+                border: `1px solid ${borderColor}66`,
+                color: borderColor,
+                fontSize: 10,
+                lineHeight: 1,
+                padding: '1px 4px',
+                borderRadius: 3,
+                cursor: 'pointer',
+                flexShrink: 0,
+              }}
+            >
+              ≡
+            </button>
           )}
         </div>
 
