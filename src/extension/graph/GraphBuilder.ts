@@ -389,34 +389,44 @@ async function buildNodesAndEdges(
     }
 
     // 9b. Method → Method（クロスクラス静的呼び出し＋同一クラス内呼び出し）
-    const visibleMethodNames = new Set(visibleMethods.map(m => m.label));
-    const methodCallsInfo = extractMethodCalls(parsed.source, visibleMethodNames);
+    // LSP symbols include parameter signatures (e.g. "myMethod(String param)"),
+    // so build a map from base name → method node to match extractMethodCalls results.
+    const methodByBaseName = new Map<string, ApexMethodNode>();
+    for (const m of visibleMethods) {
+      const baseName = m.label.split('(')[0].trim();
+      if (!methodByBaseName.has(baseName)) methodByBaseName.set(baseName, m);
+    }
+    const visibleBaseNames = new Set(methodByBaseName.keys());
+    const methodCallsInfo = extractMethodCalls(parsed.source, visibleBaseNames);
 
     for (const { methodName, crossClassCalls, intraClassCalls } of methodCallsInfo) {
-      const sourceMethodId = `method:${parsed.name}.${methodName}`;
-      if (!visibleMethods.some(m => m.id === sourceMethodId)) continue;
+      const sourceMethod = methodByBaseName.get(methodName);
+      if (!sourceMethod) continue;
+      const sourceMethodId = sourceMethod.id;
 
       for (const { targetClass, targetMethod } of crossClassCalls) {
         const targetClassNode = classNodes.get(targetClass);
         if (!targetClassNode) continue;
-        const targetMethodId = `method:${targetClass}.${targetMethod}`;
-        if (!targetClassNode.methods.some(m => m.id === targetMethodId && m.accessModifier !== 'private')) continue;
+        const targetM = targetClassNode.methods.find(
+          m => m.accessModifier !== 'private' && m.label.split('(')[0].trim() === targetMethod
+        );
+        if (!targetM) continue;
         addEdge({
-          id: `edge:calls:${sourceMethodId}:${targetMethodId}`,
+          id: `edge:calls:${sourceMethodId}:${targetM.id}`,
           kind: 'calls',
           sourceId: sourceMethodId,
-          targetId: targetMethodId,
+          targetId: targetM.id,
         });
       }
 
       for (const callee of intraClassCalls) {
-        const targetMethodId = `method:${parsed.name}.${callee}`;
-        if (!visibleMethods.some(m => m.id === targetMethodId)) continue;
+        const targetM = methodByBaseName.get(callee);
+        if (!targetM) continue;
         addEdge({
-          id: `edge:calls:${sourceMethodId}:${targetMethodId}`,
+          id: `edge:calls:${sourceMethodId}:${targetM.id}`,
           kind: 'calls',
           sourceId: sourceMethodId,
-          targetId: targetMethodId,
+          targetId: targetM.id,
         });
       }
     }

@@ -298,6 +298,28 @@ export function CodeGraphCanvas() {
 
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
 
+  // Method focus: class-level edges derived from method→method/sobject call edges.
+  // These replace the normal filteredEdges so connections are visible between class nodes.
+  const methodFocusClassEdges = useMemo((): GraphEdge[] => {
+    if (!methodFocusInfo || !selectedMethodId) return [];
+    const seen = new Set<string>();
+    const result: GraphEdge[] = [];
+    for (const e of gEdges) {
+      if (e.sourceId !== selectedMethodId) continue;
+      const targetId = e.targetId.startsWith('method:')
+        ? classIdFromMethodId(e.targetId)
+        : e.targetId.startsWith('sobject:') ? e.targetId : null;
+      if (!targetId || targetId === methodFocusInfo.sourceClassId) continue;
+      if (!filteredNodeIds.has(targetId)) continue;
+      const edgeId = `method-focus:${methodFocusInfo.sourceClassId}:${targetId}:${e.kind}`;
+      if (!seen.has(edgeId)) {
+        seen.add(edgeId);
+        result.push({ id: edgeId, kind: e.kind, sourceId: methodFocusInfo.sourceClassId, targetId });
+      }
+    }
+    return result;
+  }, [methodFocusInfo, selectedMethodId, gEdges, filteredNodeIds]);
+
   // Classes expanded to method level
   const expandedClassIds = useMemo(() => {
     if (methodFocusInfo) {
@@ -315,15 +337,17 @@ export function CodeGraphCanvas() {
     return ids;
   }, [filteredNodes, expandedMethodNodeIds, methodFocusInfo]);
 
-  // Edges: class-level only (methods rendered as HTML, no React Flow child nodes)
-  const filteredEdges = useMemo(() =>
-    gEdges.filter((e) =>
+  // Edges: in method focus mode use synthetic class-level edges derived from method calls;
+  // otherwise show class-level edges only (method edges rendered as HTML, not React Flow nodes).
+  const filteredEdges = useMemo(() => {
+    if (methodFocusInfo) return methodFocusClassEdges;
+    return gEdges.filter((e) =>
       !e.sourceId.startsWith('method:') &&
       !e.targetId.startsWith('method:') &&
       filteredNodeIds.has(e.sourceId) &&
       filteredNodeIds.has(e.targetId),
-    ),
-  [gEdges, filteredNodeIds]);
+    );
+  }, [gEdges, filteredNodeIds, methodFocusInfo, methodFocusClassEdges]);
 
   // Per-node expand/collapse state in class focus mode
   const nodeExpandState = useMemo(() => {
