@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ExtensionToWebviewMessage, WebviewToExtensionMessage, GraphSnapshot } from '../shared/types';
 import { GraphStore } from './graph/GraphStore';
-import { buildGraphSnapshot, buildFocusedSnapshot, defaultViewState } from './graph/GraphBuilder';
+import { buildGraphSnapshot, buildSingleNodeSnapshot, buildNeighborNodes, defaultViewState } from './graph/GraphBuilder';
 import { resolveReferences } from './lsp/ReferenceResolver';
 import { createFileWatcher } from './FileWatcher';
 
@@ -25,7 +25,6 @@ export class WebviewPanelManager {
   private readonly store = new GraphStore();
   private fileWatcher: vscode.Disposable | undefined;
   private editorListener: vscode.Disposable | undefined;
-  private scanDepth: 1 | 2 | 3 = 2;
   private followMode = false;
   private currentFocusUri: vscode.Uri | undefined;
   private pendingBootstrapUri: vscode.Uri | undefined;
@@ -99,10 +98,31 @@ export class WebviewPanelManager {
         await this.bootstrapFromActiveEditor();
         break;
 
-      case 'SET_SCAN_DEPTH':
-        this.scanDepth = msg.payload.depth;
-        if (this.currentFocusUri) await this.buildFocused(this.currentFocusUri);
+      case 'EXPAND_NODE': {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) break;
+        try {
+          const targetUri = vscode.Uri.parse(msg.payload.nodeUri);
+          const result = await buildNeighborNodes(
+            targetUri,
+            msg.payload.alreadyIncludedUris,
+            workspaceRoot,
+            (stage, percent) => this.post({ type: 'PROGRESS', payload: { stage, percent } })
+          );
+          this.post({
+            type: 'NODE_EXPANDED',
+            payload: {
+              newNodes: result.newNodes,
+              newEdges: result.newEdges,
+              neighborCounts: result.neighborCounts,
+              cappedCount: result.cappedCount,
+            },
+          });
+        } catch (e) {
+          this.post({ type: 'ERROR', payload: { message: String(e), code: 'EXPAND_ERROR' } });
+        }
         break;
+      }
 
       case 'GET_REFERENCES': {
         try {
@@ -156,7 +176,7 @@ export class WebviewPanelManager {
     const label = path.basename(uri.fsPath);
     this.post({ type: 'ACTIVE_FILE_CHANGED', payload: { label, uri: uri.toString() } });
 
-    const cacheKey = `${uri.toString()}:${this.scanDepth}`;
+    const cacheKey = uri.toString();
     const cached = this.snapshotCache.get(cacheKey);
     if (cached) {
       this.store.setSnapshot(cached);
@@ -171,10 +191,9 @@ export class WebviewPanelManager {
     }
 
     try {
-      const snapshot = await buildFocusedSnapshot(
+      const snapshot = await buildSingleNodeSnapshot(
         uri,
         workspaceRoot,
-        this.scanDepth,
         (stage, percent) => this.post({ type: 'PROGRESS', payload: { stage, percent } })
       );
       if (this.snapshotCache.size >= WebviewPanelManager.MAX_CACHE_SIZE) {

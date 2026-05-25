@@ -18,6 +18,9 @@ interface ApexClassNodeProps extends NodeProps {
     onCollapseDownstream?: () => void;
     onToggleMethodLevel?: () => void;
     onMethodClick?: (methodId: string) => void;
+    neighborCount?: number;
+    onExpandGraph?: () => void;
+    isPendingExpansion?: boolean;
   };
 }
 
@@ -51,6 +54,9 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
     onCollapseDownstream,
     onToggleMethodLevel,
     onMethodClick,
+    neighborCount = 0,
+    onExpandGraph,
+    isPendingExpansion = false,
   } = data;
 
   const soqlCount = node.methods.reduce((n, m) => n + m.soqlQueries.length, 0);
@@ -239,11 +245,14 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
           )}
         </div>
 
-        {(onExpandDownstream || onCollapseDownstream) && (
+        {(onExpandDownstream || onCollapseDownstream || isPendingExpansion || neighborCount > 0) && (
           <ExpandCollapseButtons
             color={borderColor}
             onExpand={onExpandDownstream}
             onCollapse={onCollapseDownstream}
+            neighborCount={neighborCount}
+            onExpandGraph={onExpandGraph}
+            isPendingExpansion={isPendingExpansion}
           />
         )}
       </div>
@@ -335,10 +344,16 @@ function ExpandCollapseButtons({
   color,
   onExpand,
   onCollapse,
+  neighborCount = 0,
+  onExpandGraph,
+  isPendingExpansion = false,
 }: {
   color: string;
   onExpand?: () => void;
   onCollapse?: () => void;
+  neighborCount?: number;
+  onExpandGraph?: () => void;
+  isPendingExpansion?: boolean;
 }) {
   return (
     <div style={{
@@ -351,6 +366,26 @@ function ExpandCollapseButtons({
       gap: 4,
       zIndex: 10,
     }}>
+      {(isPendingExpansion || neighborCount > 0) && (
+        <button
+          onClick={(e) => { e.stopPropagation(); onExpandGraph?.(); }}
+          disabled={isPendingExpansion || !onExpandGraph}
+          title={isPendingExpansion ? '展開中…' : `${neighborCount} 件の隣接ノードを追加`}
+          style={{
+            background: '#0a0c14',
+            border: `1px solid ${color}88`,
+            color: isPendingExpansion ? '#555' : color,
+            fontSize: 11,
+            fontWeight: 700,
+            padding: '0px 7px',
+            borderRadius: 3,
+            cursor: isPendingExpansion || !onExpandGraph ? 'default' : 'pointer',
+            lineHeight: 1.6,
+          }}
+        >
+          {isPendingExpansion ? '…' : `+${neighborCount}`}
+        </button>
+      )}
       {onExpand && (
         <button
           onClick={(e) => { e.stopPropagation(); onExpand(); }}

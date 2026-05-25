@@ -70,8 +70,9 @@ interface GraphStore {
 
   // オンデマンドスキャン状態
   activeFocusLabel: string;
-  scanDepth: 1 | 2 | 3;
   followMode: boolean;
+  neighborCounts: Record<string, number>;
+  pendingExpansionNodeId: string | null;
 
   setSnapshot: (snapshot: GraphSnapshot) => void;
   setGranularity: (level: GranularityLevel) => void;
@@ -92,8 +93,9 @@ interface GraphStore {
   exitFocus: () => void;
   setSearchQuery: (q: string) => void;
   setActiveFocusLabel: (label: string) => void;
-  setScanDepth: (d: 1 | 2 | 3) => void;
   setFollowMode: (enabled: boolean) => void;
+  mergeExpansion: (newNodes: GraphNode[], newEdges: GraphEdge[], newCounts: Record<string, number>, expandedNodeId: string, cappedCount: number) => void;
+  setPendingExpansion: (nodeId: string | null) => void;
 }
 
 export const useGraphStore = create<GraphStore>((set, get) => ({
@@ -112,8 +114,9 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   focusBoundaryIds: new Set(),
   searchQuery: '',
   activeFocusLabel: '',
-  scanDepth: 2,
   followMode: false,
+  neighborCounts: {},
+  pendingExpansionNodeId: null,
 
   setSnapshot(snapshot) {
     set({
@@ -131,6 +134,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       focusExpandedIds: new Set(),
       focusBoundaryIds: new Set(),
       searchQuery: '',
+      neighborCounts: snapshot.neighborCounts ?? {},
+      pendingExpansionNodeId: null,
     });
   },
 
@@ -290,11 +295,46 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     set({ activeFocusLabel: label });
   },
 
-  setScanDepth(d) {
-    set({ scanDepth: d });
-  },
-
   setFollowMode(enabled) {
     set({ followMode: enabled });
+  },
+
+  mergeExpansion(newNodes, newEdges, newCounts, expandedNodeId, cappedCount) {
+    set((s) => {
+      const existingIds = new Set(s.nodes.map((n) => n.id));
+      const addedNodes = newNodes.filter((n) => !existingIds.has(n.id));
+
+      const existingEdgeIds = new Set(s.edges.map((e) => e.id));
+      const addedEdges = newEdges.filter((e) => !existingEdgeIds.has(e.id));
+
+      // 新ノードを展開済みノードの右側に配置
+      const parentPos = s.layoutState[expandedNodeId] ?? { x: 0, y: 0 };
+      const newPositions: Record<string, { x: number; y: number }> = {};
+      addedNodes.forEach((n, i) => {
+        newPositions[n.id] = {
+          x: parentPos.x + 300,
+          y: parentPos.y + (i - (addedNodes.length - 1) / 2) * 110,
+        };
+      });
+
+      const updatedCounts = {
+        ...s.neighborCounts,
+        ...newCounts,
+        [expandedNodeId]: cappedCount,
+      };
+
+      return {
+        nodes: [...s.nodes, ...addedNodes],
+        edges: [...s.edges, ...addedEdges],
+        layoutState: { ...s.layoutState, ...newPositions },
+        neighborCounts: updatedCounts,
+        pendingExpansionNodeId: null,
+        progress: null,
+      };
+    });
+  },
+
+  setPendingExpansion(nodeId) {
+    set({ pendingExpansionNodeId: nodeId });
   },
 }));

@@ -11,6 +11,15 @@ import {
   NodeFilter,
   ViewState,
 } from '../../shared/types';
+
+export const HUB_CAP = 20;
+
+export interface NeighborResult {
+  newNodes: GraphNode[];
+  newEdges: GraphEdge[];
+  neighborCounts: Record<string, number>;
+  cappedCount: number;
+}
 import { extractSOQL, extractDML } from '../parser/SOQLExtractor';
 import { parseSObjectDirectory, parseSObjectMeta } from '../parser/SObjectMetaParser';
 import { parseApexDirectory, parseApexSource, ParsedApexClass, ParsedApexTrigger } from '../parser/ApexSourceParser';
@@ -626,4 +635,253 @@ export async function buildFocusedSnapshot(
     layoutState: {},
     viewState: defaultViewState,
   };
+}
+
+// -----------------------------------------------------------------------
+// 単一ノードスナップショット（初期表示用・ルートファイル1件のみ）
+// -----------------------------------------------------------------------
+export async function buildSingleNodeSnapshot(
+  rootUri: vscode.Uri,
+  workspaceRoot: string,
+  onProgress?: (stage: string, percent: number) => void
+): Promise<GraphSnapshot> {
+  onProgress?.('ファイルを解析中…', 10);
+
+  let bytes: Uint8Array;
+  try {
+    bytes = await vscode.workspace.fs.readFile(rootUri);
+  } catch {
+    return { version: 1, projectRoot: path.basename(workspaceRoot), nodes: [], edges: [], annotations: [], layoutState: {}, viewState: defaultViewState, neighborCounts: {} };
+  }
+
+  const source = Buffer.from(bytes).toString('utf8');
+  const parsed = parseApexSource(rootUri, source);
+  if (!parsed) {
+    return { version: 1, projectRoot: path.basename(workspaceRoot), nodes: [], edges: [], annotations: [], layoutState: {}, viewState: defaultViewState, neighborCounts: {} };
+  }
+
+  onProgress?.('ノードを構築中…', 40);
+
+  const nodes: GraphNode[] = [];
+  let nodeId: string;
+
+  if ('targetSObject' in parsed) {
+    const triggerNode = buildTriggerNode(parsed);
+    nodes.push(triggerNode);
+    nodeId = triggerNode.id;
+  } else {
+    const lspSymbols = await tryLspDocumentSymbol(rootUri);
+    const classNode = buildClassNode(parsed, lspSymbols);
+    nodes.push(classNode);
+    nodeId = classNode.id;
+  }
+
+  onProgress?.('隣接ノード数を調査中…', 60);
+
+  let neighborCount = 0;
+  if (!('targetSObject' in parsed)) {
+    const forwardNames = [
+      ...parsed.referencedClasses.map((r) => r.targetClass),
+      ...(parsed.extendsClass ? [parsed.extendsClass] : []),
+      ...parsed.implementsInterfaces,
+    ];
+    const resolved = await Promise.all(forwardNames.map((name) => resolveClassNameToUri(name, workspaceRoot)));
+    const forwardCount = resolved.filter(Boolean).length;
+
+    const pos = findClassNamePosition(parsed.source, parsed.name);
+    const backwardLocs = await executeReferences(rootUri, pos).catch(() => []);
+    const backwardCount = new Set(
+      backwardLocs
+        .map((l) => l.uri.toString())
+        .filter((u) => u !== rootUri.toString() && isApexUri(vscode.Uri.parse(u)))
+    ).size;
+
+    neighborCount = forwardCount + backwardCount;
+  }
+
+  onProgress?.('完了', 100);
+
+  console.log(`[CodeGraph] single node snapshot: ${nodeId}, ${neighborCount} neighbors`);
+
+  return {
+    version: 1,
+    projectRoot: path.basename(workspaceRoot),
+    nodes,
+    edges: [],
+    annotations: [],
+    layoutState: {},
+    viewState: defaultViewState,
+    neighborCounts: { [nodeId]: neighborCount },
+  };
+}
+
+// -----------------------------------------------------------------------
+// 隣接ノード展開（+ボタン押下時・1ホップのみ）
+// -----------------------------------------------------------------------
+export async function buildNeighborNodes(
+  targetUri: vscode.Uri,
+  alreadyIncludedUris: string[],
+  workspaceRoot: string,
+  onProgress?: (stage: string, percent: number) => void
+): Promise<NeighborResult> {
+  const alreadyIncludedSet = new Set(alreadyIncludedUris);
+  const empty: NeighborResult = { newNodes: [], newEdges: [], neighborCounts: {}, cappedCount: 0 };
+
+  let bytes: Uint8Array;
+  try {
+    bytes = await vscode.workspace.fs.readFile(targetUri);
+  } catch {
+    return empty;
+  }
+
+  const source = Buffer.from(bytes).toString('utf8');
+  const parsed = parseApexSource(targetUri, source);
+  if (!parsed || 'targetSObject' in parsed) return empty;
+
+  onProgress?.('前進参照を解決中…', 15);
+
+  const forwardNames = [
+    ...parsed.referencedClasses.map((r) => r.targetClass),
+    ...(parsed.extendsClass ? [parsed.extendsClass] : []),
+    ...parsed.implementsInterfaces,
+  ];
+  const forwardResolved = await Promise.all(forwardNames.map((name) => resolveClassNameToUri(name, workspaceRoot)));
+  const forwardUris: string[] = [];
+  for (const r of forwardResolved) {
+    if (r) forwardUris.push(r.toString());
+  }
+
+  onProgress?.('後退参照を解決中…', 35);
+
+  const pos = findClassNamePosition(parsed.source, parsed.name);
+  const backwardLocs = await executeReferences(targetUri, pos).catch(() => []);
+  const backwardUris = backwardLocs
+    .filter((l) => isApexUri(l.uri) && l.uri.toString() !== targetUri.toString())
+    .map((l) => l.uri.toString());
+
+  const allNeighborUris = [...new Set([...forwardUris, ...backwardUris])];
+  const newUris = allNeighborUris.filter((u) => !alreadyIncludedSet.has(u));
+
+  const cappedCount = Math.max(0, newUris.length - HUB_CAP);
+  const finalNewUris = newUris.slice(0, HUB_CAP);
+
+  onProgress?.(`新しいノードを解析中… (${finalNewUris.length} ファイル)`, 50);
+
+  const parseResults = await Promise.all(
+    finalNewUris.map(async (uriStr) => {
+      try {
+        const uri = vscode.Uri.parse(uriStr);
+        const b = await vscode.workspace.fs.readFile(uri);
+        const src = Buffer.from(b).toString('utf8');
+        return { uri, parsed: parseApexSource(uri, src) };
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  const parsedNewClasses = new Map<string, ParsedApexClass>();
+  const parsedNewTriggers: ParsedApexTrigger[] = [];
+  for (const result of parseResults) {
+    if (!result?.parsed) continue;
+    if ('targetSObject' in result.parsed) {
+      parsedNewTriggers.push(result.parsed);
+    } else {
+      parsedNewClasses.set(result.parsed.name, result.parsed);
+    }
+  }
+
+  onProgress?.('ノードを構築中…', 70);
+
+  const newNodes: GraphNode[] = [];
+  const newClassNodes = new Map<string, ApexClassNode>();
+  await Promise.all(
+    [...parsedNewClasses.entries()].map(async ([, parsedClass]) => {
+      const lspSymbols = await tryLspDocumentSymbol(parsedClass.uri);
+      const classNode = buildClassNode(parsedClass, lspSymbols);
+      newClassNodes.set(parsedClass.name, classNode);
+      newNodes.push(classNode);
+    })
+  );
+  for (const parsedTrigger of parsedNewTriggers) {
+    newNodes.push(buildTriggerNode(parsedTrigger));
+  }
+
+  onProgress?.('エッジを構築中…', 85);
+
+  // 既存ノードのクラス名を URI のファイル名から推定（標準的な Apex 命名規則前提）
+  const allKnownClassNames = new Set<string>();
+  for (const uriStr of alreadyIncludedUris) {
+    const basename = path.basename(uriStr);
+    if (basename.endsWith('.cls')) allKnownClassNames.add(basename.slice(0, -4));
+  }
+  for (const name of parsedNewClasses.keys()) allKnownClassNames.add(name);
+
+  const targetNodeId = `cls:${parsed.name}`;
+  const newEdges: GraphEdge[] = [];
+  const edgeSet = new Set<string>();
+  const addEdge = (edge: GraphEdge) => {
+    if (!edgeSet.has(edge.id)) { edgeSet.add(edge.id); newEdges.push(edge); }
+  };
+
+  // target → 新ノード（前進参照）
+  for (const ref of parsed.referencedClasses) {
+    if (newClassNodes.has(ref.targetClass)) {
+      addEdge({ id: `edge:${ref.kind}:${targetNodeId}:cls:${ref.targetClass}`, kind: ref.kind, sourceId: targetNodeId, targetId: `cls:${ref.targetClass}` });
+    }
+  }
+  if (parsed.extendsClass && newClassNodes.has(parsed.extendsClass)) {
+    addEdge({ id: `edge:inherits:${targetNodeId}:cls:${parsed.extendsClass}`, kind: 'inherits', sourceId: targetNodeId, targetId: `cls:${parsed.extendsClass}` });
+  }
+  for (const iface of parsed.implementsInterfaces) {
+    if (newClassNodes.has(iface)) {
+      addEdge({ id: `edge:implements:${targetNodeId}:cls:${iface}`, kind: 'implements', sourceId: targetNodeId, targetId: `cls:${iface}` });
+    }
+  }
+
+  // 新ノード → target / 既存ノード（新ノードの前進参照）
+  for (const [className, parsedClass] of parsedNewClasses) {
+    const sourceId = `cls:${className}`;
+    for (const ref of parsedClass.referencedClasses) {
+      if (ref.targetClass === className || !allKnownClassNames.has(ref.targetClass)) continue;
+      addEdge({ id: `edge:${ref.kind}:${sourceId}:cls:${ref.targetClass}`, kind: ref.kind, sourceId, targetId: `cls:${ref.targetClass}` });
+    }
+    if (parsedClass.extendsClass && allKnownClassNames.has(parsedClass.extendsClass)) {
+      addEdge({ id: `edge:inherits:${sourceId}:cls:${parsedClass.extendsClass}`, kind: 'inherits', sourceId, targetId: `cls:${parsedClass.extendsClass}` });
+    }
+    for (const iface of parsedClass.implementsInterfaces) {
+      if (allKnownClassNames.has(iface)) {
+        addEdge({ id: `edge:implements:${sourceId}:cls:${iface}`, kind: 'implements', sourceId, targetId: `cls:${iface}` });
+      }
+    }
+  }
+
+  // 既存ノード → target（後退参照で alreadyIncluded に含まれるもの）
+  for (const bUri of backwardUris) {
+    if (!alreadyIncludedSet.has(bUri)) continue;
+    const bBasename = path.basename(bUri);
+    if (!bBasename.endsWith('.cls')) continue;
+    const callerClass = bBasename.slice(0, -4);
+    addEdge({ id: `edge:calls:cls:${callerClass}:${targetNodeId}`, kind: 'calls', sourceId: `cls:${callerClass}`, targetId: targetNodeId });
+  }
+
+  onProgress?.('隣接ノード数を算出中…', 95);
+
+  // 各新ノードの未展開隣接数（前進参照ベースの近似）
+  const neighborCounts: Record<string, number> = {};
+  for (const [className, parsedClass] of parsedNewClasses) {
+    const nodeId = `cls:${className}`;
+    const fwdNames = [
+      ...parsedClass.referencedClasses.map((r) => r.targetClass),
+      ...(parsedClass.extendsClass ? [parsedClass.extendsClass] : []),
+      ...parsedClass.implementsInterfaces,
+    ];
+    neighborCounts[nodeId] = fwdNames.filter((n) => !allKnownClassNames.has(n)).length;
+  }
+
+  onProgress?.('完了', 100);
+
+  console.log(`[CodeGraph] neighbor expansion: +${newNodes.length} nodes, +${newEdges.length} edges, capped=${cappedCount}`);
+
+  return { newNodes, newEdges, neighborCounts, cappedCount };
 }
