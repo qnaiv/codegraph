@@ -61,6 +61,7 @@ interface GraphStore {
   progress: Progress | null;
   referenceMap: ReferenceMap;
   expandedMethodNodeIds: Set<string>;
+  selectedMethodId: string | null;
   focusRootId: string | null;
   focusUpstreamIds: Set<string>;
   focusExpandedIds: Set<string>;
@@ -81,6 +82,8 @@ interface GraphStore {
   updateNodePosition: (nodeId: string, pos: XYPosition) => void;
   setProgress: (progress: Progress) => void;
   toggleNodeMethodLevel: (nodeId: string) => void;
+  selectMethod: (methodId: string) => void;
+  clearMethodSelection: () => void;
   enterFocus: (rootId: string, baseNodeIds: Set<string>) => void;
   expandFocusDownstream: (nodeId: string) => void;
   collapseFocusDownstream: (nodeId: string) => void;
@@ -101,6 +104,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   progress: null,
   referenceMap: new Map(),
   expandedMethodNodeIds: new Set(),
+  selectedMethodId: null,
   focusRootId: null,
   focusUpstreamIds: new Set(),
   focusExpandedIds: new Set(),
@@ -120,6 +124,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       progress: null,
       referenceMap: new Map(),
       expandedMethodNodeIds: new Set(),
+      selectedMethodId: null,
       focusRootId: null,
       focusUpstreamIds: new Set(),
       focusExpandedIds: new Set(),
@@ -208,8 +213,16 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       const next = new Set(s.expandedMethodNodeIds);
       if (next.has(nodeId)) next.delete(nodeId);
       else next.add(nodeId);
-      return { expandedMethodNodeIds: next, layoutState: {} };
+      return { expandedMethodNodeIds: next, selectedMethodId: null, layoutState: {} };
     });
+  },
+
+  selectMethod(methodId: string) {
+    set({ selectedMethodId: methodId, expandedMethodNodeIds: new Set(), layoutState: {} });
+  },
+
+  clearMethodSelection() {
+    set({ selectedMethodId: null, expandedMethodNodeIds: new Set(), layoutState: {} });
   },
 
   enterFocus(rootId, baseNodeIds) {

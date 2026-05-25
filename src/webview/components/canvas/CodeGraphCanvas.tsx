@@ -44,19 +44,19 @@ const edgeTypes: EdgeTypes = {
 };
 
 // -----------------------------------------------------------------------
-// Container sizing constants
+// Container sizing constants (must match ApexClassNode.tsx)
 // -----------------------------------------------------------------------
-const CONTAINER_W        = 200;
-const CONTAINER_HEADER_H = 56;
-const METHOD_H           = 50;
-const METHOD_GAP         = 4;
-const CONTAINER_PAD_B    = 10;
+const CONTAINER_W         = 200;
+const CONTAINER_HEADER_H  = 56;
+const METHOD_ITEM_H       = 22;   // compact row height
+export const MAX_METHOD_SCROLL_H = 280; // max scrollable method area
+const CONTAINER_PAD_B     = 6;
 
 function containerSize(methodCount: number) {
-  const height = methodCount > 0
-    ? CONTAINER_HEADER_H + methodCount * (METHOD_H + METHOD_GAP) + CONTAINER_PAD_B
-    : 80;
-  return { width: CONTAINER_W, height };
+  const methodAreaH = methodCount > 0
+    ? Math.min(methodCount * METHOD_ITEM_H, MAX_METHOD_SCROLL_H)
+    : 0;
+  return { width: CONTAINER_W, height: Math.max(CONTAINER_HEADER_H + methodAreaH + CONTAINER_PAD_B, 80) };
 }
 
 // -----------------------------------------------------------------------
@@ -79,18 +79,23 @@ function isApexClass(n: GraphNode): n is ApexClassNode {
   return n.kind === 'apex-class' || n.kind === 'apex-interface' || n.kind === 'apex-enum';
 }
 
+function classIdFromMethodId(methodId: string): string {
+  return `cls:${methodId.replace(/^method:/, '').split('.')[0]}`;
+}
+
 function toRFNode(
   gNode: GraphNode,
   pos: { x: number; y: number },
   existingStyle: React.CSSProperties | undefined,
+  existingData: Record<string, unknown>,
   isSelected: boolean,
   isReferenced: boolean,
   isAnySelectedForDim: boolean,
   onOpenFile: () => void,
-  isContainer: boolean,
   onExpandDownstream: (() => void) | undefined,
   onCollapseDownstream: (() => void) | undefined,
   onToggleMethodLevel: (() => void) | undefined,
+  onMethodClick: ((methodId: string) => void) | undefined,
 ): Node {
   const isDimmed = isAnySelectedForDim && !isSelected && !isReferenced;
   const isHighlighted = isSelected || isReferenced;
@@ -99,14 +104,14 @@ function toRFNode(
     type: nodeTypeForKind(gNode.kind),
     position: pos,
     data: {
-      graphNode: gNode,
+      ...existingData,
       isDimmed,
       isHighlighted,
       onOpenFile,
-      isContainer,
       onExpandDownstream,
       onCollapseDownstream,
       onToggleMethodLevel,
+      onMethodClick,
     },
     style: {
       ...existingStyle,
@@ -179,7 +184,10 @@ export function CodeGraphCanvas() {
     viewState,
     progress,
     expandedMethodNodeIds,
+    selectedMethodId,
     toggleNodeMethodLevel,
+    selectMethod,
+    clearMethodSelection,
     focusRootId,
     focusUpstreamIds,
     focusExpandedIds,
@@ -200,19 +208,20 @@ export function CodeGraphCanvas() {
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
 
-  // ESC key: exit focus or clear search
+  // ESC key: clear method selection → exit focus → clear search
   React.useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        if (focusRootId) exitFocus();
+        if (selectedMethodId) clearMethodSelection();
+        else if (focusRootId) exitFocus();
         else if (searchQuery) setSearchQuery('');
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [focusRootId, searchQuery, exitFocus, setSearchQuery]);
+  }, [selectedMethodId, clearMethodSelection, focusRootId, searchQuery, exitFocus, setSearchQuery]);
 
-  // Base nodes: apply only persistent filters (hideTestClasses, hideManagedPackages)
+  // Base nodes: persistent filters (hideTestClasses, hideManagedPackages)
   const baseNodes = useMemo(() => gNodes.filter((n) => {
     if (activeFilters.hideTestClasses &&
       (n.kind === 'apex-class' || n.kind === 'apex-interface') &&
@@ -224,7 +233,32 @@ export function CodeGraphCanvas() {
 
   const baseNodeIds = useMemo(() => new Set(baseNodes.map((n) => n.id)), [baseNodes]);
 
-  // Compute focus visible set from upstream + expanded downstream
+  // -----------------------------------------------------------------------
+  // Method focus: compute which nodes to show and which methods to highlight
+  // -----------------------------------------------------------------------
+  const methodFocusInfo = useMemo(() => {
+    if (!selectedMethodId) return null;
+    const sourceClassId = classIdFromMethodId(selectedMethodId);
+    const calleeClassIds = new Set<string>([sourceClassId]);
+    const calleeMethodIds = new Set<string>();
+
+    for (const e of gEdges) {
+      if (e.sourceId !== selectedMethodId) continue;
+      if (e.targetId.startsWith('method:')) {
+        const targetClassId = classIdFromMethodId(e.targetId);
+        if (targetClassId !== sourceClassId) {
+          calleeClassIds.add(targetClassId);
+          calleeMethodIds.add(e.targetId);
+        }
+      }
+      if (e.targetId.startsWith('sobject:')) {
+        calleeClassIds.add(e.targetId);
+      }
+    }
+    return { sourceClassId, calleeClassIds, calleeMethodIds };
+  }, [selectedMethodId, gEdges]);
+
+  // Focus visible set (class focus mode)
   const focusVisibleIds = useMemo(() => {
     if (!focusRootId) return new Set<string>();
     const visible = new Set<string>([focusRootId]);
@@ -239,83 +273,49 @@ export function CodeGraphCanvas() {
     return visible;
   }, [focusRootId, focusUpstreamIds, focusExpandedIds, focusBoundaryIds, gEdges]);
 
-  // Filtered nodes: apply focus or search on top of base
+  // Filtered nodes: method focus > class focus > search > all
   const filteredNodes = useMemo(() => {
+    if (methodFocusInfo) {
+      return baseNodes.filter((n) => methodFocusInfo.calleeClassIds.has(n.id));
+    }
     if (focusRootId) return baseNodes.filter((n) => focusVisibleIds.has(n.id));
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
       return baseNodes.filter((n) => n.label.toLowerCase().includes(q));
     }
     return baseNodes;
-  }, [baseNodes, focusRootId, focusVisibleIds, searchQuery]);
+  }, [baseNodes, methodFocusInfo, focusRootId, focusVisibleIds, searchQuery]);
 
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
 
-  // Set of class node IDs that are individually expanded to method level
+  // Classes expanded to method level
   const expandedClassIds = useMemo(() => {
+    if (methodFocusInfo) {
+      // Method focus: expand all shown classes
+      const ids = new Set<string>();
+      for (const n of filteredNodes) {
+        if (isApexClass(n)) ids.add(n.id);
+      }
+      return ids;
+    }
     const ids = new Set<string>();
     for (const n of filteredNodes) {
-      if (isApexClass(n) && expandedMethodNodeIds.has(n.id)) {
-        ids.add(n.id);
-      }
+      if (isApexClass(n) && expandedMethodNodeIds.has(n.id)) ids.add(n.id);
     }
     return ids;
-  }, [filteredNodes, expandedMethodNodeIds]);
+  }, [filteredNodes, expandedMethodNodeIds, methodFocusInfo]);
 
-  // Visible method IDs across all expanded class nodes
-  const visibleMethodIds = useMemo(() => {
-    if (expandedClassIds.size === 0) return null;
-    const ids = new Set<string>();
-    for (const n of filteredNodes) {
-      if (isApexClass(n) && expandedClassIds.has(n.id)) {
-        for (const m of n.methods) {
-          if (m.accessModifier !== 'private') ids.add(m.id);
-        }
-      }
-    }
-    return ids;
-  }, [expandedClassIds, filteredNodes]);
+  // Edges: class-level only (methods rendered as HTML, no React Flow child nodes)
+  const filteredEdges = useMemo(() =>
+    gEdges.filter((e) =>
+      !e.sourceId.startsWith('method:') &&
+      !e.targetId.startsWith('method:') &&
+      filteredNodeIds.has(e.sourceId) &&
+      filteredNodeIds.has(e.targetId),
+    ),
+  [gEdges, filteredNodeIds]);
 
-  const filteredEdges = useMemo(() => {
-    const anyExpanded = expandedClassIds.size > 0;
-
-    return gEdges.filter((e) => {
-      const srcIsMethod = e.sourceId.startsWith('method:');
-      const tgtIsMethod = e.targetId.startsWith('method:');
-
-      // Method-level edges: show only when both endpoint classes are expanded
-      if (srcIsMethod || tgtIsMethod) {
-        if (!anyExpanded || !visibleMethodIds) return false;
-        const srcOk = srcIsMethod
-          ? visibleMethodIds.has(e.sourceId)
-          : filteredNodeIds.has(e.sourceId);
-        const tgtOk = tgtIsMethod
-          ? visibleMethodIds.has(e.targetId)
-          : filteredNodeIds.has(e.targetId);
-        return srcOk && tgtOk;
-      }
-
-      // Class-level edges: both nodes must be visible
-      if (!filteredNodeIds.has(e.sourceId) || !filteredNodeIds.has(e.targetId)) return false;
-
-      if (anyExpanded) {
-        const srcExpanded = expandedClassIds.has(e.sourceId);
-        const tgtExpanded = expandedClassIds.has(e.targetId);
-        // calls/instantiates: hide when both sides expanded (method-level edges replace them)
-        if ((e.kind === 'calls' || e.kind === 'instantiates') && srcExpanded && tgtExpanded) {
-          return false;
-        }
-        // soql/dml at class level: hide when source is expanded (method→sobject replaces)
-        if ((e.kind === 'soql-references' || e.kind.startsWith('dml-')) && srcExpanded) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-  }, [gEdges, filteredNodeIds, expandedClassIds, visibleMethodIds]);
-
-  // Per-node expand/collapse state in focus mode
+  // Per-node expand/collapse state in class focus mode
   const nodeExpandState = useMemo(() => {
     if (!focusRootId) return new Map<string, { canExpand: boolean; canCollapse: boolean }>();
     const map = new Map<string, { canExpand: boolean; canCollapse: boolean }>();
@@ -328,15 +328,12 @@ export function CodeGraphCanvas() {
         (e) => e.sourceId === n.id && focusBoundaryIds.has(e.targetId)
       );
       if (!hasAnyDownstreamInBoundary) continue;
-      map.set(n.id, {
-        canExpand: hasHiddenDownstream,
-        canCollapse: isExpanded,
-      });
+      map.set(n.id, { canExpand: hasHiddenDownstream, canCollapse: isExpanded });
     }
     return map;
   }, [focusRootId, filteredNodes, gEdges, focusBoundaryIds, focusVisibleIds, focusExpandedIds]);
 
-  // Referenced nodes for edge highlight (only in non-focus mode)
+  // Referenced nodes for edge highlight
   const referencedNodeIds = useMemo(() => {
     const refs = new Set<string>();
     if (!hasSelection || focusRootId) return refs;
@@ -347,44 +344,38 @@ export function CodeGraphCanvas() {
     return refs;
   }, [hasSelection, focusRootId, highlightedEdgeIds, gEdges]);
 
-  // In focus mode, suppress dim effect
   const isAnySelectedForDim = hasSelection && !focusRootId;
 
   // -----------------------------------------------------------------------
-  // Build RF nodes: mix of method-expanded containers and flat class nodes
+  // Build RF nodes: containers (HTML method list) or flat class nodes
+  // No React Flow method child nodes — methods are HTML inside container
   // -----------------------------------------------------------------------
   const rfNodesBase = useMemo(() => {
     const topLevelNodes: Node[] = [];
-    const methodChildNodes: Node[] = [];
 
     for (const n of filteredNodes) {
       const pos = layoutState[n.id] ?? { x: 0, y: 0 };
 
       if (isApexClass(n) && expandedClassIds.has(n.id)) {
-        // Render as container with method children
         const publicMethods = n.methods.filter(m => m.accessModifier !== 'private');
-        const { width, height } = containerSize(publicMethods.length);
+        // Callee classes: show only the called methods
+        const isCalleeClass = methodFocusInfo !== null && n.id !== methodFocusInfo.sourceClassId;
+        const shownCount = (isCalleeClass && methodFocusInfo)
+          ? publicMethods.filter(m => methodFocusInfo.calleeMethodIds.has(m.id)).length
+          : publicMethods.length;
+        const { width, height } = containerSize(shownCount);
         topLevelNodes.push({
           id: n.id,
           type: 'apexClass',
           position: pos,
           style: { width, height },
-          data: { graphNode: n, isContainer: true },
-        });
-        publicMethods.forEach((method, i) => {
-          methodChildNodes.push({
-            id: method.id,
-            type: 'apexMethod',
-            position: {
-              x: 8,
-              y: CONTAINER_HEADER_H + i * (METHOD_H + METHOD_GAP),
-            },
-            parentId: n.id,
-            extent: 'parent' as const,
-            draggable: false,
-            selectable: false,
-            data: { graphNode: method },
-          });
+          data: {
+            graphNode: n,
+            isContainer: true,
+            isCalleeClass,
+            calleeMethodIds: methodFocusInfo?.calleeMethodIds ?? null,
+            selectedMethodId,
+          },
         });
       } else {
         topLevelNodes.push({
@@ -396,54 +387,61 @@ export function CodeGraphCanvas() {
       }
     }
 
-    // Run Dagre on top-level nodes if no positions stored yet
     const needsLayout = !topLevelNodes.some((cn) => layoutState[cn.id]);
     if (needsLayout) {
-      const rfEdgesForLayout: Edge[] = filteredEdges
-        .filter(e => !e.sourceId.startsWith('method:') && !e.targetId.startsWith('method:'))
-        .map((e) => ({ id: e.id, source: e.sourceId, target: e.targetId }));
-      const laid = applyDagreLayout(topLevelNodes, rfEdgesForLayout, 'LR');
-      return [...laid, ...methodChildNodes];
+      const rfEdgesForLayout: Edge[] = filteredEdges.map((e) => ({
+        id: e.id, source: e.sourceId, target: e.targetId,
+      }));
+      return applyDagreLayout(topLevelNodes, rfEdgesForLayout, 'LR');
     }
-    return [...topLevelNodes, ...methodChildNodes];
-  }, [filteredNodes, filteredEdges, layoutState, expandedClassIds]);
+    return topLevelNodes;
+  }, [filteredNodes, filteredEdges, layoutState, expandedClassIds, methodFocusInfo, selectedMethodId]);
 
-  // Merge highlight / dim / interaction state onto top-level nodes
+  // Method click callback
+  const handleMethodClick = useCallback((methodId: string) => {
+    if (selectedMethodId === methodId) {
+      clearMethodSelection();
+    } else {
+      selectMethod(methodId);
+    }
+  }, [selectedMethodId, selectMethod, clearMethodSelection]);
+
+  // Merge highlight / dim / interaction onto nodes
   const rfNodes: Node[] = useMemo(() =>
     rfNodesBase.map((rfNode) => {
-      // Method child nodes: no interaction state needed
-      if (rfNode.parentId) return rfNode;
-
       const gNode = gNodes.find((n) => n.id === rfNode.id);
       if (!gNode) return rfNode;
 
-      const isSelected  = selectedNodeIds.includes(rfNode.id);
+      const isSelected   = selectedNodeIds.includes(rfNode.id);
       const isReferenced = referencedNodeIds.has(rfNode.id);
       const onOpenFile = () => {
         if (hasLocation(gNode)) {
           postMessage({ type: 'OPEN_FILE', payload: { uri: gNode.uri, range: gNode.range } });
         }
       };
-      const containerFlag = expandedClassIds.has(rfNode.id) && isApexClass(gNode);
       const expandState = nodeExpandState.get(rfNode.id);
-      const onToggle = isApexClass(gNode)
+      const onToggle = isApexClass(gNode) && !selectedMethodId
         ? () => toggleNodeMethodLevel(rfNode.id)
         : undefined;
+      const onMethodClickForNode = isApexClass(gNode) ? handleMethodClick : undefined;
+
       return toRFNode(
         gNode,
         rfNode.position,
         rfNode.style as React.CSSProperties | undefined,
+        rfNode.data as Record<string, unknown>,
         isSelected,
         isReferenced,
         isAnySelectedForDim,
         onOpenFile,
-        containerFlag,
         expandState?.canExpand ? () => expandFocusDownstream(rfNode.id) : undefined,
         expandState?.canCollapse ? () => collapseFocusDownstream(rfNode.id) : undefined,
         onToggle,
+        onMethodClickForNode,
       );
     }),
-  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, isAnySelectedForDim, expandedClassIds, nodeExpandState, expandFocusDownstream, collapseFocusDownstream, toggleNodeMethodLevel]);
+  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, isAnySelectedForDim, selectedMethodId,
+   nodeExpandState, expandFocusDownstream, collapseFocusDownstream, toggleNodeMethodLevel, handleMethodClick]);
 
   const rfEdges: Edge[] = useMemo(() =>
     filteredEdges.map((e) => toRFEdge(e, highlightedEdgeIds.includes(e.id), isAnySelectedForDim)),
@@ -474,32 +472,36 @@ export function CodeGraphCanvas() {
     []
   );
 
-  // Single click: enter focus mode (method child nodes: ignore)
+  // Single click: if method focus active, clear it; otherwise enter class focus
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
-    if (node.parentId) return;
+    if (selectedMethodId) {
+      clearMethodSelection();
+      return;
+    }
     enterFocus(node.id, baseNodeIds);
-  }, [enterFocus, baseNodeIds]);
+  }, [enterFocus, baseNodeIds, selectedMethodId, clearMethodSelection]);
 
   // Double click: open file in editor
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: Node) => {
-    if (node.parentId) return;
     const gNode = gNodes.find((n) => n.id === node.id);
     if (!gNode || !hasLocation(gNode)) return;
     postMessage({ type: 'OPEN_FILE', payload: { uri: gNode.uri, range: gNode.range } });
   }, [gNodes]);
 
   const onPaneClick = useCallback(() => {
+    if (selectedMethodId) { clearMethodSelection(); return; }
     if (focusRootId) exitFocus();
     else useGraphStore.getState().clearHighlight();
-  }, [focusRootId, exitFocus]);
+  }, [selectedMethodId, clearMethodSelection, focusRootId, exitFocus]);
 
   const isEmpty = gNodes.length === 0 && !progress;
-
   const focusRootLabel = focusRootId
     ? (gNodes.find((n) => n.id === focusRootId)?.label ?? focusRootId)
     : null;
-
-  const anyMethodExpanded = expandedClassIds.size > 0;
+  const selectedMethodLabel = selectedMethodId
+    ? selectedMethodId.replace(/^method:/, '').replace('.', '.')
+    : null;
+  const anyMethodExpanded = expandedClassIds.size > 0 && !selectedMethodId;
 
   return (
     <div style={{ width: '100%', height: '100vh', position: 'relative', background: '#0a0c14' }}>
@@ -527,7 +529,6 @@ export function CodeGraphCanvas() {
           nodeColor={(node) => {
             if (node.id.startsWith('sobject:')) return '#4a9d4a';
             if (node.id.startsWith('trigger:')) return '#9d4a9d';
-            if (node.id.startsWith('method:'))  return '#2a4060';
             return '#4a90d9';
           }}
           style={{ background: '#0e1018', border: '1px solid #222' }}
@@ -547,21 +548,14 @@ export function CodeGraphCanvas() {
           style={{
             background: '#1e1e2e',
             border: `1px solid ${searchQuery ? '#4a90d9' : '#333'}`,
-            borderRadius: 4,
-            color: '#cce4f7',
-            fontSize: 11,
-            padding: '3px 8px',
-            width: 160,
-            outline: 'none',
+            borderRadius: 4, color: '#cce4f7', fontSize: 11,
+            padding: '3px 8px', width: 160, outline: 'none',
           }}
         />
         {searchQuery && (
           <button
             onClick={() => setSearchQuery('')}
-            style={{
-              background: 'none', border: 'none', color: '#666',
-              fontSize: 13, cursor: 'pointer', padding: '0 2px',
-            }}
+            style={{ background: 'none', border: 'none', color: '#666', fontSize: 13, cursor: 'pointer', padding: '0 2px' }}
           >
             ×
           </button>
@@ -570,7 +564,6 @@ export function CodeGraphCanvas() {
 
       {/* Top-right toolbar */}
       <div style={{ position: 'absolute', top: 8, right: 8, display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-        {/* フォーカスファイル名 */}
         {activeFocusLabel ? (
           <span style={{
             color: '#4a90d9', fontSize: 11, padding: '3px 8px',
@@ -585,15 +578,11 @@ export function CodeGraphCanvas() {
           </span>
         )}
 
-        {/* 深度セレクター */}
         <div style={{ display: 'flex', border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
           {([1, 2, 3] as const).map((d) => (
             <button
               key={d}
-              onClick={() => {
-                setScanDepth(d);
-                postMessage({ type: 'SET_SCAN_DEPTH', payload: { depth: d } });
-              }}
+              onClick={() => { setScanDepth(d); postMessage({ type: 'SET_SCAN_DEPTH', payload: { depth: d } }); }}
               style={{
                 background: scanDepth === d ? '#1a3a5a' : '#1e1e2e',
                 color: scanDepth === d ? '#cce4f7' : '#666',
@@ -606,6 +595,7 @@ export function CodeGraphCanvas() {
             </button>
           ))}
         </div>
+
         <FilterToggle
           label="テスト非表示"
           active={activeFilters.hideTestClasses}
@@ -617,13 +607,8 @@ export function CodeGraphCanvas() {
           onToggle={(v) => useGraphStore.getState().updateFilter({ hideManagedPackages: v })}
         />
 
-        {/* 追従モードトグル */}
         <button
-          onClick={() => {
-            const next = !followMode;
-            setFollowMode(next);
-            postMessage({ type: 'FOLLOW_MODE', payload: { enabled: next } });
-          }}
+          onClick={() => { const next = !followMode; setFollowMode(next); postMessage({ type: 'FOLLOW_MODE', payload: { enabled: next } }); }}
           title={followMode ? 'エディタ追従: ON（クリックでOFF）' : 'エディタ追従: OFF（クリックでON）'}
           style={{
             background: followMode ? '#1a3a2a' : '#1e1e2e',
@@ -635,7 +620,6 @@ export function CodeGraphCanvas() {
           {followMode ? '追従 ON' : '追従 OFF'}
         </button>
 
-        {/* 全スキャンボタン */}
         <button
           onClick={() => postMessage({ type: 'REFRESH_GRAPH' })}
           disabled={!!progress}
@@ -657,23 +641,22 @@ export function CodeGraphCanvas() {
           color: '#555', pointerEvents: 'none',
           display: 'flex', alignItems: 'center', gap: 8,
         }}>
-          {focusRootId ? (
+          {selectedMethodId ? (
             <>
-              <span style={{ color: '#ff8c00' }}>
-                フォーカス: {focusRootLabel}
-              </span>
+              <span style={{ color: '#bb88ff' }}>メソッドフォーカス: {selectedMethodLabel}</span>
+              <span>{filteredNodes.length} ノード表示中</span>
+              <span style={{ color: '#444' }}>ESCで解除</span>
+            </>
+          ) : focusRootId ? (
+            <>
+              <span style={{ color: '#ff8c00' }}>フォーカス: {focusRootLabel}</span>
               <span>{filteredNodes.length} ノード表示中</span>
               <button
                 onClick={expandFocusAll}
                 style={{
-                  pointerEvents: 'all',
-                  background: '#1e1e2e',
-                  border: '1px solid #444',
-                  color: '#aaa',
-                  fontSize: 10,
-                  borderRadius: 3,
-                  padding: '1px 6px',
-                  cursor: 'pointer',
+                  pointerEvents: 'all', background: '#1e1e2e',
+                  border: '1px solid #444', color: '#aaa', fontSize: 10,
+                  borderRadius: 3, padding: '1px 6px', cursor: 'pointer',
                 }}
               >
                 すべて展開
@@ -701,9 +684,7 @@ export function CodeGraphCanvas() {
                 </span>
               )}
               {hasSelection && (
-                <span style={{ color: '#ffd700' }}>
-                  参照ハイライト中 — クリックで解除
-                </span>
+                <span style={{ color: '#ffd700' }}>参照ハイライト中 — クリックで解除</span>
               )}
             </>
           )}
@@ -712,12 +693,11 @@ export function CodeGraphCanvas() {
 
       {isEmpty && (
         <div style={{
-          position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column',
-          alignItems: 'center', justifyContent: 'center', gap: 8,
+          position: 'absolute', inset: 0, display: 'flex',
+          alignItems: 'center', justifyContent: 'center',
           color: '#444', fontSize: 14, pointerEvents: 'none',
         }}>
-          <span>{activeFocusLabel ? `${activeFocusLabel} の関連ノードが見つかりませんでした` : '.cls または .trigger ファイルをエディタで開いてください'}</span>
-          <span style={{ fontSize: 11 }}>ツールバーの「↺ 全スキャン」でワークスペース全体を表示することもできます</span>
+          Salesforce プロジェクトを開いてください
         </div>
       )}
     </div>

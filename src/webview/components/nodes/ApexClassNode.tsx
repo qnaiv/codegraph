@@ -1,6 +1,8 @@
 import React, { memo } from 'react';
 import { Handle, Position, NodeProps } from '@xyflow/react';
-import { ApexClassNode as ApexClassNodeData } from '../../../shared/types';
+import { ApexClassNode as ApexClassNodeData, ApexMethodNode } from '../../../shared/types';
+
+const MAX_METHOD_SCROLL_H = 280; // must match CodeGraphCanvas.tsx
 
 interface ApexClassNodeProps extends NodeProps {
   data: {
@@ -9,9 +11,13 @@ interface ApexClassNodeProps extends NodeProps {
     isDimmed?: boolean;
     onOpenFile?: () => void;
     isContainer?: boolean;
+    isCalleeClass?: boolean;
+    calleeMethodIds?: Set<string> | null;
+    selectedMethodId?: string | null;
     onExpandDownstream?: () => void;
     onCollapseDownstream?: () => void;
     onToggleMethodLevel?: () => void;
+    onMethodClick?: (methodId: string) => void;
   };
 }
 
@@ -33,7 +39,19 @@ const ANNOTATION_ICONS: Record<string, string> = {
 export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
   data,
 }: ApexClassNodeProps) {
-  const { graphNode: node, isDimmed, onOpenFile, isContainer, onExpandDownstream, onCollapseDownstream, onToggleMethodLevel } = data;
+  const {
+    graphNode: node,
+    isDimmed,
+    onOpenFile,
+    isContainer,
+    isCalleeClass,
+    calleeMethodIds,
+    selectedMethodId,
+    onExpandDownstream,
+    onCollapseDownstream,
+    onToggleMethodLevel,
+    onMethodClick,
+  } = data;
 
   const soqlCount = node.methods.reduce((n, m) => n + m.soqlQueries.length, 0);
   const dmlCount = node.methods.reduce((n, m) => n + m.dmlOperations.length, 0);
@@ -50,9 +68,14 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
       : '#4a90d9';
 
   if (isContainer) {
+    const publicMethods = node.methods.filter((m) => m.accessModifier !== 'private');
+    const visibleMethods: ApexMethodNode[] = (isCalleeClass && calleeMethodIds)
+      ? publicMethods.filter((m) => calleeMethodIds.has(m.id))
+      : publicMethods;
+
     return (
       <>
-        <Handle type="target" position={Position.Left}  style={{ background: borderColor, top: 28 }} />
+        <Handle type="target" position={Position.Left} style={{ background: borderColor, top: 28 }} />
         <div
           style={{
             width: '100%',
@@ -66,12 +89,7 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
           }}
         >
           {/* Class header */}
-          <div
-            style={{
-              padding: '6px 10px 6px',
-              borderBottom: `1px solid ${borderColor}22`,
-            }}
-          >
+          <div style={{ padding: '6px 10px 6px', borderBottom: `1px solid ${borderColor}22` }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
               <span style={{ fontFamily: 'monospace', fontSize: 10, color: borderColor, flexShrink: 0 }}>
                 {KIND_ICON[node.kind]}
@@ -122,7 +140,25 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
               </div>
             )}
           </div>
-          {/* Method area: React Flow renders child nodes here */}
+
+          {/* Method list: scrollable HTML */}
+          {visibleMethods.length > 0 && (
+            <div
+              className="nowheel"
+              onMouseDown={(e) => e.stopPropagation()}
+              style={{ overflowY: 'auto', maxHeight: MAX_METHOD_SCROLL_H }}
+            >
+              {visibleMethods.map((m) => (
+                <MethodRow
+                  key={m.id}
+                  method={m}
+                  isSelected={selectedMethodId === m.id}
+                  borderColor={borderColor}
+                  onClick={onMethodClick}
+                />
+              ))}
+            </div>
+          )}
         </div>
         <Handle type="source" position={Position.Right} style={{ background: borderColor, top: 28 }} />
       </>
@@ -202,7 +238,6 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
           )}
         </div>
 
-        {/* +/- buttons: float just below the card, outside it, near the source handle */}
         {(onExpandDownstream || onCollapseDownstream) && (
           <ExpandCollapseButtons
             color={borderColor}
@@ -215,6 +250,62 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
     </>
   );
 });
+
+function MethodRow({
+  method,
+  isSelected,
+  borderColor,
+  onClick,
+}: {
+  method: ApexMethodNode;
+  isSelected: boolean;
+  borderColor: string;
+  onClick?: (methodId: string) => void;
+}) {
+  const annIcons = method.annotations.map((a) => ANNOTATION_ICONS[a.name]).filter(Boolean).join(' ');
+  return (
+    <div
+      onClick={(e) => { e.stopPropagation(); onClick?.(method.id); }}
+      style={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 4,
+        padding: '2px 8px',
+        cursor: onClick ? 'pointer' : 'default',
+        borderLeft: isSelected ? `3px solid ${borderColor}` : '3px solid transparent',
+        background: isSelected ? `${borderColor}22` : 'transparent',
+        minHeight: 22,
+        boxSizing: 'border-box',
+      }}
+    >
+      {method.isStatic && (
+        <span style={{ color: '#888', fontSize: 9, flexShrink: 0 }}>S</span>
+      )}
+      <span
+        style={{
+          color: isSelected ? '#cce4f7' : '#aabbcc',
+          fontSize: 11,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+          flex: 1,
+          minWidth: 0,
+        }}
+      >
+        {method.label}
+      </span>
+      {annIcons && (
+        <span style={{ fontSize: 9, flexShrink: 0 }}>{annIcons}</span>
+      )}
+      {method.soqlQueries.length > 0 && (
+        <span style={{ color: '#4a9d4a', fontSize: 9, flexShrink: 0 }}>S{method.soqlQueries.length}</span>
+      )}
+      {method.dmlOperations.length > 0 && (
+        <span style={{ color: '#e8a020', fontSize: 9, flexShrink: 0 }}>D{method.dmlOperations.length}</span>
+      )}
+    </div>
+  );
+}
 
 function ExpandCollapseButtons({
   color,
