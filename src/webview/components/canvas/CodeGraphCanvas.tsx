@@ -292,7 +292,12 @@ export function CodeGraphCanvas() {
   // Filtered nodes: method focus > class focus > search > all
   const filteredNodes = useMemo(() => {
     if (methodFocusInfo) {
-      return baseNodes.filter((n) => methodFocusInfo.calleeClassIds.has(n.id));
+      return baseNodes.filter((n) => {
+        if (methodFocusInfo.calleeClassIds.has(n.id)) return true;
+        // Inner classes of any included class stay visible
+        const outerClassId = isApexClass(n) ? (n as ApexClassNode).outerClassId : undefined;
+        return outerClassId != null && methodFocusInfo.calleeClassIds.has(outerClassId);
+      });
     }
     if (focusRootId) return baseNodes.filter((n) => focusVisibleIds.has(n.id));
     if (searchQuery.trim()) {
