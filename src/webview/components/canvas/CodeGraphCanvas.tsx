@@ -489,7 +489,6 @@ export function CodeGraphCanvas() {
       .map((n) => (n as { uri: string }).uri);
     useGraphStore.getState().setPendingExpansion(sourceClassId);
     postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: (gNode as { uri: string }).uri, alreadyIncludedUris } });
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedMethodId]); // fire only when the focused method changes
 
   // Method click callback
