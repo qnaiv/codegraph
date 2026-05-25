@@ -4,14 +4,17 @@ import { ApexAnnotation, TriggerEvent } from '../../shared/types';
 import {
   ParsedApexMethodInfo,
   ParsedClassRef,
+  ParsedInnerClass,
   parseAnnotations,
   parseMethods,
   parseClassRefs,
   parseApexClassHeader,
   parseApexTriggerHeader,
+  parseInnerClasses,
+  stripInnerClassBodies,
 } from './apexParseUtils';
 
-export { ParsedClassRef };
+export { ParsedClassRef, ParsedInnerClass };
 
 export interface ParsedApexClass {
   name: string;
@@ -26,6 +29,7 @@ export interface ParsedApexClass {
   annotations: ApexAnnotation[];
   methods: ParsedApexMethodInfo[];
   referencedClasses: ParsedClassRef[];
+  innerClasses: ParsedInnerClass[];
   uri: vscode.Uri;
   source: string;
 }
@@ -53,10 +57,14 @@ export function parseApexSource(uri: vscode.Uri, source: string): ParsedApexClas
   const header = parseApexClassHeader(source);
   if (!header) return null;
 
+  const innerClasses = parseInnerClasses(source);
+  const strippedSource = innerClasses.length > 0 ? stripInnerClassBodies(source) : source;
+
   return {
     ...header,
-    methods: parseMethods(source),
-    referencedClasses: parseClassRefs(source),
+    methods: parseMethods(strippedSource),
+    referencedClasses: parseClassRefs(strippedSource),
+    innerClasses,
     uri,
     source,
   };
@@ -105,4 +113,4 @@ export async function parseApexDirectory(workspaceRoot: string): Promise<{
 }
 
 // re-export for consumers that import from this module
-export { parseAnnotations, parseMethods, parseClassRefs };
+export { parseAnnotations, parseMethods, parseClassRefs, parseInnerClasses, stripInnerClassBodies };

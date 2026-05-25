@@ -231,13 +231,15 @@ export function CodeGraphCanvas() {
     return () => window.removeEventListener('keydown', handler);
   }, [selectedMethodId, clearMethodSelection, focusRootId, searchQuery, exitFocus, setSearchQuery]);
 
-  // Base nodes: persistent filters (hideTestClasses, hideManagedPackages)
+  // Base nodes: persistent filters (hideTestClasses, hideManagedPackages, hideInnerClasses)
   const baseNodes = useMemo(() => gNodes.filter((n) => {
     if (activeFilters.hideTestClasses &&
       (n.kind === 'apex-class' || n.kind === 'apex-interface') &&
       (n as ApexClassNode).isTestClass) return false;
     if (activeFilters.hideManagedPackages &&
       'namespace' in n && (n as ApexClassNode).namespace) return false;
+    if (activeFilters.hideInnerClasses &&
+      isApexClass(n) && (n as ApexClassNode).outerClassId) return false;
     return true;
   }), [gNodes, activeFilters]);
 
@@ -631,6 +633,11 @@ export function CodeGraphCanvas() {
           label="MPkg非表示"
           active={activeFilters.hideManagedPackages}
           onToggle={(v) => useGraphStore.getState().updateFilter({ hideManagedPackages: v })}
+        />
+        <FilterToggle
+          label="Inner非表示"
+          active={activeFilters.hideInnerClasses ?? false}
+          onToggle={(v) => useGraphStore.getState().updateFilter({ hideInnerClasses: v })}
         />
 
         <button

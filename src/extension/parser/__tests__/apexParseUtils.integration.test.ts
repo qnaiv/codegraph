@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import * as fs from 'fs';
 import * as path from 'path';
-import { parseClassRefs, parseApexClassHeader, parseApexTriggerHeader, parseMethods } from '../apexParseUtils';
+import {
+  parseClassRefs,
+  parseApexClassHeader,
+  parseApexTriggerHeader,
+  parseMethods,
+  parseInnerClasses,
+  stripInnerClassBodies,
+} from '../apexParseUtils';
 
 // -----------------------------------------------------------------------
 // 実際のサンプルファイルを使った統合テスト
@@ -131,6 +138,72 @@ describe('Integration: parseMethods on actual sample files', () => {
     expect(m).toBeDefined();
     expect(m?.isStatic).toBe(true);
     expect(m?.annotations.map((a) => a.name)).toContain('Future');
+  });
+});
+
+describe('Integration: parseInnerClasses on actual sample files', () => {
+  it('AccountService: detects AccountSummary and AccountTier', () => {
+    const src = readSample(SAMPLE_DIR, 'AccountService.cls');
+    const names = parseInnerClasses(src).map((c) => c.name);
+    expect(names).toContain('AccountSummary');
+    expect(names).toContain('AccountTier');
+  });
+
+  it('AccountService: AccountTier is an enum', () => {
+    const src = readSample(SAMPLE_DIR, 'AccountService.cls');
+    const inner = parseInnerClasses(src);
+    expect(inner.find((c) => c.name === 'AccountTier')?.kind).toBe('apex-enum');
+  });
+
+  it('AccountService: AccountSummary has a constructor', () => {
+    const src = readSample(SAMPLE_DIR, 'AccountService.cls');
+    const inner = parseInnerClasses(src);
+    const summary = inner.find((c) => c.name === 'AccountSummary');
+    expect(summary?.methods.map((m) => m.name)).toContain('AccountSummary');
+  });
+
+  it('OrderService: detects OrderResult and OrderStatus', () => {
+    const src = readSample(SAMPLE_DIR, 'OrderService.cls');
+    const names = parseInnerClasses(src).map((c) => c.name);
+    expect(names).toContain('OrderResult');
+    expect(names).toContain('OrderStatus');
+  });
+
+  it('LeadService: detects LeadResult, LeadFilter, ConversionStatus', () => {
+    const src = readSample(SAMPLE_DIR, 'LeadService.cls');
+    const names = parseInnerClasses(src).map((c) => c.name);
+    expect(names).toContain('LeadResult');
+    expect(names).toContain('LeadFilter');
+    expect(names).toContain('ConversionStatus');
+  });
+
+  it('LeadService: ConversionStatus is an enum', () => {
+    const src = readSample(SAMPLE_DIR, 'LeadService.cls');
+    const inner = parseInnerClasses(src);
+    expect(inner.find((c) => c.name === 'ConversionStatus')?.kind).toBe('apex-enum');
+  });
+
+  it('BaseService: no inner classes', () => {
+    const src = readSample(SAMPLE_DIR, 'BaseService.cls');
+    expect(parseInnerClasses(src)).toHaveLength(0);
+  });
+
+  it('AccountService outer methods do not include inner class constructors', () => {
+    const src = readSample(SAMPLE_DIR, 'AccountService.cls');
+    const outerMethods = parseMethods(stripInnerClassBodies(src)).map((m) => m.name);
+    // AccountSummary のコンストラクタはアウタークラスのメソッド一覧に出ない
+    expect(outerMethods).not.toContain('AccountSummary');
+    // アウタークラスのメソッドは引き続き検出される
+    expect(outerMethods).toContain('getActiveAccounts');
+    expect(outerMethods).toContain('updateAnnualRevenue');
+  });
+
+  it('OrderService outer methods do not include inner class constructors', () => {
+    const src = readSample(SAMPLE_DIR, 'OrderService.cls');
+    const outerMethods = parseMethods(stripInnerClassBodies(src)).map((m) => m.name);
+    expect(outerMethods).not.toContain('OrderResult');
+    expect(outerMethods).toContain('createOrder');
+    expect(outerMethods).toContain('cancelOrder');
   });
 });
 
