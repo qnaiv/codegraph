@@ -99,6 +99,9 @@ function toRFNode(
   onCollapseDownstream: (() => void) | undefined,
   onToggleMethodLevel: (() => void) | undefined,
   onMethodClick: ((methodId: string) => void) | undefined,
+  neighborCount: number,
+  onExpandGraph: (() => void) | undefined,
+  isPendingExpansion: boolean,
 ): Node {
   const isDimmed = isAnySelectedForDim && !isSelected && !isReferenced;
   const isHighlighted = isSelected || isReferenced;
@@ -115,6 +118,9 @@ function toRFNode(
       onCollapseDownstream,
       onToggleMethodLevel,
       onMethodClick,
+      neighborCount,
+      onExpandGraph,
+      isPendingExpansion,
     },
     style: {
       ...existingStyle,
@@ -197,16 +203,17 @@ export function CodeGraphCanvas() {
     focusBoundaryIds,
     searchQuery,
     activeFocusLabel,
-    scanDepth,
     followMode,
+    neighborCounts,
+    pendingExpansionNodeId,
     enterFocus,
     expandFocusDownstream,
     collapseFocusDownstream,
     expandFocusAll,
     exitFocus,
     setSearchQuery,
-    setScanDepth,
     setFollowMode,
+    setPendingExpansion,
   } = useGraphStore();
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
@@ -411,6 +418,17 @@ export function CodeGraphCanvas() {
     return topLevelNodes;
   }, [filteredNodes, filteredEdges, layoutState, expandedClassIds, methodFocusInfo, selectedMethodId]);
 
+  // Graph expansion callback: collect current URIs and send EXPAND_NODE message
+  const handleExpandGraph = useCallback((nodeId: string) => {
+    const gNode = gNodes.find((n) => n.id === nodeId);
+    if (!gNode || !hasLocation(gNode)) return;
+    const alreadyIncludedUris = gNodes
+      .filter((n) => hasLocation(n))
+      .map((n) => (n as { uri: string }).uri);
+    setPendingExpansion(nodeId);
+    postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: gNode.uri, alreadyIncludedUris } });
+  }, [gNodes, setPendingExpansion]);
+
   // Method click callback
   const handleMethodClick = useCallback((methodId: string) => {
     if (selectedMethodId === methodId) {
@@ -439,6 +457,11 @@ export function CodeGraphCanvas() {
         : undefined;
       const onMethodClickForNode = isApexClass(gNode) ? handleMethodClick : undefined;
 
+      const count = neighborCounts[rfNode.id] ?? 0;
+      const onExpandGraph = count > 0 && !pendingExpansionNodeId
+        ? () => handleExpandGraph(rfNode.id)
+        : undefined;
+
       return toRFNode(
         gNode,
         rfNode.position,
@@ -452,10 +475,14 @@ export function CodeGraphCanvas() {
         expandState?.canCollapse ? () => collapseFocusDownstream(rfNode.id) : undefined,
         onToggle,
         onMethodClickForNode,
+        count,
+        onExpandGraph,
+        pendingExpansionNodeId === rfNode.id,
       );
     }),
   [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, isAnySelectedForDim, selectedMethodId,
-   nodeExpandState, expandFocusDownstream, collapseFocusDownstream, toggleNodeMethodLevel, handleMethodClick]);
+   nodeExpandState, expandFocusDownstream, collapseFocusDownstream, toggleNodeMethodLevel, handleMethodClick,
+   neighborCounts, pendingExpansionNodeId, handleExpandGraph]);
 
   const rfEdges: Edge[] = useMemo(() =>
     filteredEdges.map((e) => toRFEdge(e, highlightedEdgeIds.includes(e.id), isAnySelectedForDim)),
@@ -595,24 +622,6 @@ export function CodeGraphCanvas() {
           </span>
         )}
 
-        <div style={{ display: 'flex', border: '1px solid #333', borderRadius: 4, overflow: 'hidden' }}>
-          {([1, 2, 3] as const).map((d) => (
-            <button
-              key={d}
-              onClick={() => { setScanDepth(d); postMessage({ type: 'SET_SCAN_DEPTH', payload: { depth: d } }); }}
-              style={{
-                background: scanDepth === d ? '#1a3a5a' : '#1e1e2e',
-                color: scanDepth === d ? '#cce4f7' : '#666',
-                border: 'none',
-                borderRight: d < 3 ? '1px solid #333' : 'none',
-                padding: '3px 8px', fontSize: 11, cursor: 'pointer',
-              }}
-            >
-              {d}
-            </button>
-          ))}
-        </div>
-
         <FilterToggle
           label="テスト非表示"
           active={activeFilters.hideTestClasses}
@@ -682,7 +691,7 @@ export function CodeGraphCanvas() {
             </>
           ) : (
             <>
-              <span>{filteredNodes.length} nodes · {filteredEdges.length} edges{activeFocusLabel ? ` · 深度${scanDepth}` : ''}</span>
+              <span>{filteredNodes.length} nodes · {filteredEdges.length} edges</span>
               {anyMethodExpanded && (
                 <span style={{ color: '#4a90d9' }}>{expandedClassIds.size} クラス展開中</span>
               )}

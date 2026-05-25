@@ -18,6 +18,9 @@ interface ApexClassNodeProps extends NodeProps {
     onCollapseDownstream?: () => void;
     onToggleMethodLevel?: () => void;
     onMethodClick?: (methodId: string) => void;
+    neighborCount?: number;
+    onExpandGraph?: () => void;
+    isPendingExpansion?: boolean;
   };
 }
 
@@ -51,6 +54,9 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
     onCollapseDownstream,
     onToggleMethodLevel,
     onMethodClick,
+    neighborCount = 0,
+    onExpandGraph,
+    isPendingExpansion = false,
   } = data;
 
   const soqlCount = node.methods.reduce((n, m) => n + m.soqlQueries.length, 0);
@@ -246,6 +252,15 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
             onCollapse={onCollapseDownstream}
           />
         )}
+
+        {(isPendingExpansion || neighborCount > 0) && (
+          <ExpandGraphBadge
+            count={neighborCount}
+            isPending={isPendingExpansion}
+            color={borderColor}
+            onClick={onExpandGraph}
+          />
+        )}
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: borderColor }} />
     </>
@@ -328,6 +343,45 @@ function MethodRow({
         </div>
       )}
     </div>
+  );
+}
+
+function ExpandGraphBadge({
+  count,
+  isPending,
+  color,
+  onClick,
+}: {
+  count: number;
+  isPending: boolean;
+  color: string;
+  onClick?: () => void;
+}) {
+  return (
+    <button
+      onClick={(e) => { e.stopPropagation(); onClick?.(); }}
+      disabled={isPending || !onClick}
+      title={isPending ? '展開中…' : `${count} 件の隣接ノードを展開`}
+      style={{
+        position: 'absolute',
+        top: 4,
+        right: 4,
+        background: isPending ? `${color}33` : `${color}22`,
+        border: `1px solid ${color}88`,
+        color: isPending ? '#888' : color,
+        fontSize: 9,
+        fontWeight: 700,
+        padding: '1px 5px',
+        borderRadius: 10,
+        cursor: isPending || !onClick ? 'default' : 'pointer',
+        lineHeight: 1.5,
+        minWidth: 22,
+        textAlign: 'center',
+        pointerEvents: 'all',
+      }}
+    >
+      {isPending ? '…' : `+${count}`}
+    </button>
   );
 }
 

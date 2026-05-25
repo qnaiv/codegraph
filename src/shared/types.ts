@@ -280,6 +280,7 @@ export interface GraphSnapshot {
   annotations: Annotation[];
   layoutState: Record<string, XYPosition>;
   viewState: ViewState;
+  neighborCounts?: Record<string, number>;
 }
 
 // ============================================================
@@ -292,7 +293,8 @@ export type ExtensionToWebviewMessage =
   | { type: 'DEFINITION_RESULT'; payload: { uri: string; range: LSPRange } }
   | { type: 'PROGRESS'; payload: { stage: string; percent: number } }
   | { type: 'ERROR'; payload: { message: string; code: string } }
-  | { type: 'ACTIVE_FILE_CHANGED'; payload: { label: string; uri: string } };
+  | { type: 'ACTIVE_FILE_CHANGED'; payload: { label: string; uri: string } }
+  | { type: 'NODE_EXPANDED'; payload: { newNodes: GraphNode[]; newEdges: GraphEdge[]; neighborCounts: Record<string, number>; cappedCount: number } };
 
 // ============================================================
 // 型ガードユーティリティ
@@ -319,5 +321,5 @@ export type WebviewToExtensionMessage =
   | { type: 'DELETE_ANNOTATION'; payload: { annotationId: string } }
   | { type: 'SAVE_LAYOUT'; payload: { positions: Record<string, XYPosition> } }
   | { type: 'REFRESH_GRAPH' }
-  | { type: 'SET_SCAN_DEPTH'; payload: { depth: 1 | 2 | 3 } }
+  | { type: 'EXPAND_NODE'; payload: { nodeUri: string; alreadyIncludedUris: string[] } }
   | { type: 'FOLLOW_MODE'; payload: { enabled: boolean } };

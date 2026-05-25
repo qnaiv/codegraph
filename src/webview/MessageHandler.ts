@@ -33,6 +33,14 @@ export function initMessageHandler() {
       case 'ACTIVE_FILE_CHANGED':
         store.setActiveFocusLabel(msg.payload.label);
         break;
+      case 'NODE_EXPANDED': {
+        const { newNodes, newEdges, neighborCounts, cappedCount } = msg.payload;
+        const pending = store.pendingExpansionNodeId;
+        if (pending) {
+          store.mergeExpansion(newNodes, newEdges, neighborCounts, pending, cappedCount);
+        }
+        break;
+      }
     }
   });
 }
