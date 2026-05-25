@@ -397,7 +397,12 @@ export function CodeGraphCanvas() {
       const rfEdgesForLayout: Edge[] = filteredEdges.map((e) => ({
         id: e.id, source: e.sourceId, target: e.targetId,
       }));
-      return applyDagreLayout(topLevelNodes, rfEdgesForLayout, 'LR');
+      const laidOut = applyDagreLayout(topLevelNodes, rfEdgesForLayout, 'LR');
+      const positions: Record<string, { x: number; y: number }> = {};
+      for (const n of laidOut) positions[n.id] = n.position;
+      useGraphStore.getState().setLayoutState(positions);
+      postMessage({ type: 'SAVE_LAYOUT', payload: { positions } });
+      return laidOut;
     }
     return topLevelNodes;
   }, [filteredNodes, filteredEdges, layoutState, expandedClassIds, methodFocusInfo, selectedMethodId]);
