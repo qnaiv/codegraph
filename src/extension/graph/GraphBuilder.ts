@@ -1014,6 +1014,38 @@ export async function buildNeighborNodes(
     addEdge({ id: `edge:calls:cls:${callerClass}:${targetNodeId}`, kind: 'calls', sourceId: `cls:${callerClass}`, targetId: targetNodeId });
   }
 
+  // メソッドレベルエッジ：target のメソッドが新ノードのメソッドを呼び出すエッジを生成
+  if (newClassNodes.size > 0) {
+    const targetLspSymbols = await tryLspDocumentSymbol(targetUri);
+    const targetClassNode = buildClassNode(parsed, targetLspSymbols);
+    const targetVisibleMethods = targetClassNode.methods.filter(m => m.accessModifier !== 'private');
+    const methodByBaseName = new Map<string, ApexMethodNode>();
+    for (const m of targetVisibleMethods) {
+      const baseName = m.label.split('(')[0].trim();
+      if (!methodByBaseName.has(baseName)) methodByBaseName.set(baseName, m);
+    }
+    const visibleBaseNames = new Set(methodByBaseName.keys());
+    const methodCallsInfo = extractMethodCalls(source, visibleBaseNames);
+    for (const { methodName, crossClassCalls } of methodCallsInfo) {
+      const sourceMethod = methodByBaseName.get(methodName);
+      if (!sourceMethod) continue;
+      for (const { targetClass, targetMethod } of crossClassCalls) {
+        const calledClassNode = newClassNodes.get(targetClass);
+        if (!calledClassNode) continue;
+        const calledMethod = calledClassNode.methods.find(
+          m => m.accessModifier !== 'private' && m.label.split('(')[0].trim() === targetMethod
+        );
+        if (!calledMethod) continue;
+        addEdge({
+          id: `edge:calls:${sourceMethod.id}:${calledMethod.id}`,
+          kind: 'calls',
+          sourceId: sourceMethod.id,
+          targetId: calledMethod.id,
+        });
+      }
+    }
+  }
+
   onProgress?.('隣接ノード数を算出中…', 95);
 
   // 各新ノードの未展開隣接数（前進参照ベースの近似）
