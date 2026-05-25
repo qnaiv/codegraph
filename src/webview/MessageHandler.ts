@@ -30,6 +30,9 @@ export function initMessageHandler() {
       case 'ERROR':
         console.error('[CodeGraph]', msg.payload.message);
         break;
+      case 'ACTIVE_FILE_CHANGED':
+        store.setActiveFocusLabel(msg.payload.label);
+        break;
     }
   });
 }
