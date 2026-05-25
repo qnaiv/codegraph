@@ -46,15 +46,17 @@ const edgeTypes: EdgeTypes = {
 // -----------------------------------------------------------------------
 // Container sizing constants (must match ApexClassNode.tsx)
 // -----------------------------------------------------------------------
-const CONTAINER_W         = 200;
-const CONTAINER_HEADER_H  = 56;
-const METHOD_ITEM_H       = 22;   // compact row height
+const CONTAINER_W            = 220;
+const CONTAINER_HEADER_H     = 56;
+const METHOD_ITEM_H          = 22;   // compact row (no doc comment)
+const METHOD_ITEM_DETAIL_H   = 40;   // rich row (with doc comment line)
 export const MAX_METHOD_SCROLL_H = 280; // max scrollable method area
-const CONTAINER_PAD_B     = 6;
+const CONTAINER_PAD_B        = 6;
 
-function containerSize(methodCount: number) {
+function containerSize(methodCount: number, detail = false) {
+  const rowH = detail ? METHOD_ITEM_DETAIL_H : METHOD_ITEM_H;
   const methodAreaH = methodCount > 0
-    ? Math.min(methodCount * METHOD_ITEM_H, MAX_METHOD_SCROLL_H)
+    ? Math.min(methodCount * rowH, MAX_METHOD_SCROLL_H)
     : 0;
   return { width: CONTAINER_W, height: Math.max(CONTAINER_HEADER_H + methodAreaH + CONTAINER_PAD_B, 80) };
 }
@@ -363,7 +365,7 @@ export function CodeGraphCanvas() {
         const shownCount = (isCalleeClass && methodFocusInfo)
           ? publicMethods.filter(m => methodFocusInfo.calleeMethodIds.has(m.id)).length
           : publicMethods.length;
-        const { width, height } = containerSize(shownCount);
+        const { width, height } = containerSize(shownCount, methodFocusInfo !== null);
         topLevelNodes.push({
           id: n.id,
           type: 'apexClass',

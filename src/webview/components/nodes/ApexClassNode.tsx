@@ -153,6 +153,7 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
                   key={m.id}
                   method={m}
                   isSelected={selectedMethodId === m.id}
+                  detail={selectedMethodId !== null && selectedMethodId !== undefined}
                   borderColor={borderColor}
                   onClick={onMethodClick}
                 />
@@ -254,54 +255,77 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
 function MethodRow({
   method,
   isSelected,
+  detail,
   borderColor,
   onClick,
 }: {
   method: ApexMethodNode;
   isSelected: boolean;
+  detail: boolean;
   borderColor: string;
   onClick?: (methodId: string) => void;
 }) {
   const annIcons = method.annotations.map((a) => ANNOTATION_ICONS[a.name]).filter(Boolean).join(' ');
+  const doc = method.docComment?.trim();
+  const docTruncated = doc && doc.length > 55 ? `${doc.slice(0, 52)}…` : doc;
+
   return (
     <div
       onClick={(e) => { e.stopPropagation(); onClick?.(method.id); }}
       style={{
-        display: 'flex',
-        alignItems: 'center',
-        gap: 4,
-        padding: '2px 8px',
+        padding: detail ? '4px 8px' : '2px 8px',
         cursor: onClick ? 'pointer' : 'default',
         borderLeft: isSelected ? `3px solid ${borderColor}` : '3px solid transparent',
         background: isSelected ? `${borderColor}22` : 'transparent',
-        minHeight: 22,
+        minHeight: detail ? 38 : 22,
         boxSizing: 'border-box',
       }}
     >
-      {method.isStatic && (
-        <span style={{ color: '#888', fontSize: 9, flexShrink: 0 }}>S</span>
-      )}
-      <span
-        style={{
-          color: isSelected ? '#cce4f7' : '#aabbcc',
-          fontSize: 11,
-          overflow: 'hidden',
-          textOverflow: 'ellipsis',
-          whiteSpace: 'nowrap',
-          flex: 1,
-          minWidth: 0,
-        }}
-      >
-        {method.label}
-      </span>
-      {annIcons && (
-        <span style={{ fontSize: 9, flexShrink: 0 }}>{annIcons}</span>
-      )}
-      {method.soqlQueries.length > 0 && (
-        <span style={{ color: '#4a9d4a', fontSize: 9, flexShrink: 0 }}>S{method.soqlQueries.length}</span>
-      )}
-      {method.dmlOperations.length > 0 && (
-        <span style={{ color: '#e8a020', fontSize: 9, flexShrink: 0 }}>D{method.dmlOperations.length}</span>
+      {/* Method name row */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+        {method.isStatic && (
+          <span style={{ color: '#888', fontSize: 9, flexShrink: 0 }}>S</span>
+        )}
+        <span
+          style={{
+            color: isSelected ? '#cce4f7' : '#aabbcc',
+            fontSize: 11,
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            flex: 1,
+            minWidth: 0,
+          }}
+        >
+          {method.label}
+        </span>
+        {annIcons && (
+          <span style={{ fontSize: 9, flexShrink: 0 }}>{annIcons}</span>
+        )}
+        {method.soqlQueries.length > 0 && (
+          <span style={{ color: '#4a9d4a', fontSize: 9, flexShrink: 0 }}>S{method.soqlQueries.length}</span>
+        )}
+        {method.dmlOperations.length > 0 && (
+          <span style={{ color: '#e8a020', fontSize: 9, flexShrink: 0 }}>D{method.dmlOperations.length}</span>
+        )}
+      </div>
+
+      {/* Doc comment — only in detail (focus) mode */}
+      {detail && docTruncated && (
+        <div
+          title={doc && doc.length > 55 ? doc : undefined}
+          style={{
+            marginTop: 2,
+            color: '#556677',
+            fontSize: 9,
+            lineHeight: '12px',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {docTruncated}
+        </div>
       )}
     </div>
   );

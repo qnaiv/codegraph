@@ -83,6 +83,7 @@ export interface ApexMethodNode {
   annotations: ApexAnnotation[];
   soqlQueries: SOQLQuery[];
   dmlOperations: DMLOperation[];
+  docComment?: string;
 }
 
 export interface ApexTriggerNode {

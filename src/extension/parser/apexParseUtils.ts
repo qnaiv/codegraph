@@ -10,6 +10,7 @@ export interface ParsedApexMethodInfo {
   isStatic: boolean;
   accessModifier: 'public' | 'private' | 'global' | 'protected';
   annotations: ApexAnnotation[];
+  docComment?: string;
 }
 
 export interface ParsedClassRef {
@@ -104,9 +105,57 @@ export function parseMethods(source: string): ParsedApexMethodInfo[] {
       isStatic: /\bstatic\b/i.test(m[2] ?? ''),
       accessModifier,
       annotations: parseAnnotationsFromText(m[0]),
+      docComment: extractDocComment(source, m.index),
     });
   }
   return methods;
+}
+
+/**
+ * Extract the doc comment (/** *\/ or //-lines) immediately preceding a method.
+ * Returns undefined when no comment is found.
+ */
+function extractDocComment(source: string, methodStartIndex: number): string | undefined {
+  const lookback = source.slice(Math.max(0, methodStartIndex - 800), methodStartIndex);
+
+  // Look for the last /** ... */ block comment
+  const blockRe = /\/\*\*([\s\S]*?)\*\//g;
+  let lastBlock: { index: number; content: string; end: number } | null = null;
+  let bm: RegExpExecArray | null;
+  while ((bm = blockRe.exec(lookback)) !== null) {
+    lastBlock = { index: bm.index, content: bm[1], end: bm.index + bm[0].length };
+  }
+
+  if (lastBlock) {
+    const afterComment = lookback.slice(lastBlock.end);
+    // Only whitespace and annotations are allowed between the comment and the method
+    if (/^[\s@\w(),.[\]"']*$/.test(afterComment)) {
+      const text = lastBlock.content
+        .split('\n')
+        .map((l) => l.replace(/^\s*\*\s?/, '').trim())
+        .filter((l) => l.length > 0 && !l.startsWith('@'))
+        .join(' ')
+        .trim();
+      return text || undefined;
+    }
+  }
+
+  // Fall back to consecutive // comment lines immediately before the method
+  const lines = lookback.trimEnd().split('\n');
+  const collected: string[] = [];
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const trimmed = lines[i].trim();
+    if (trimmed.startsWith('//')) {
+      collected.unshift(trimmed.slice(2).trim());
+    } else if (trimmed === '' || /^@\w+/.test(trimmed)) {
+      continue; // blank lines or annotations: keep looking upward
+    } else {
+      break;
+    }
+  }
+
+  const text = collected.join(' ').trim();
+  return text || undefined;
 }
 
 function parseAnnotationsFromText(text: string): ApexAnnotation[] {
