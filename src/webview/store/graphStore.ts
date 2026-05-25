@@ -60,7 +60,8 @@ interface GraphStore {
   viewState: ViewState;
   progress: Progress | null;
   referenceMap: ReferenceMap;
-  showMethodLevel: boolean;
+  expandedMethodNodeIds: Set<string>;
+  selectedMethodId: string | null;
   focusRootId: string | null;
   focusUpstreamIds: Set<string>;
   focusExpandedIds: Set<string>;
@@ -80,7 +81,9 @@ interface GraphStore {
   updateFilter: (patch: Partial<NodeFilter>) => void;
   updateNodePosition: (nodeId: string, pos: XYPosition) => void;
   setProgress: (progress: Progress) => void;
-  toggleMethodLevel: () => void;
+  toggleNodeMethodLevel: (nodeId: string) => void;
+  selectMethod: (methodId: string) => void;
+  clearMethodSelection: () => void;
   enterFocus: (rootId: string, baseNodeIds: Set<string>) => void;
   expandFocusDownstream: (nodeId: string) => void;
   collapseFocusDownstream: (nodeId: string) => void;
@@ -100,7 +103,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   viewState: defaultViewState,
   progress: null,
   referenceMap: new Map(),
-  showMethodLevel: false,
+  expandedMethodNodeIds: new Set(),
+  selectedMethodId: null,
   focusRootId: null,
   focusUpstreamIds: new Set(),
   focusExpandedIds: new Set(),
@@ -119,6 +123,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       viewState: snapshot.viewState,
       progress: null,
       referenceMap: new Map(),
+      expandedMethodNodeIds: new Set(),
+      selectedMethodId: null,
       focusRootId: null,
       focusUpstreamIds: new Set(),
       focusExpandedIds: new Set(),
@@ -202,11 +208,21 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
     set({ progress });
   },
 
-  toggleMethodLevel() {
-    set((s) => ({
-      showMethodLevel: !s.showMethodLevel,
-      layoutState: {},
-    }));
+  toggleNodeMethodLevel(nodeId: string) {
+    set((s) => {
+      const next = new Set(s.expandedMethodNodeIds);
+      if (next.has(nodeId)) next.delete(nodeId);
+      else next.add(nodeId);
+      return { expandedMethodNodeIds: next, selectedMethodId: null, layoutState: {} };
+    });
+  },
+
+  selectMethod(methodId: string) {
+    set({ selectedMethodId: methodId, expandedMethodNodeIds: new Set(), layoutState: {} });
+  },
+
+  clearMethodSelection() {
+    set({ selectedMethodId: null, expandedMethodNodeIds: new Set(), layoutState: {} });
   },
 
   enterFocus(rootId, baseNodeIds) {

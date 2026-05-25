@@ -47,22 +47,30 @@ function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymb
     (s) => s.kind === vscode.SymbolKind.Method || s.kind === vscode.SymbolKind.Constructor
   );
 
+  // Name → parsed method map for doc comment lookup when using LSP symbols
+  const parsedMethodByName = new Map(parsed.methods.map((m) => [m.name, m]));
+
   const methods: ApexMethodNode[] = lspMethods.length > 0
-    ? lspMethods.map((s) => ({
-        id: `method:${parsed.name}.${s.name}`,
-        kind: s.kind === vscode.SymbolKind.Constructor ? 'apex-constructor' : 'apex-method',
-        label: s.name,
-        parentClassId: `cls:${parsed.name}`,
-        uri: parsed.uri.toString(),
-        range: rangeToLSP(s.range),
-        returnType: '',
-        parameters: [],
-        accessModifier: 'public',
-        isStatic: false,
-        annotations: [],
-        soqlQueries: [],
-        dmlOperations: [],
-      } as ApexMethodNode))
+    ? lspMethods.map((s) => {
+        const lspName = s.name.split('(')[0].trim();
+        const parsedM = parsedMethodByName.get(lspName);
+        return {
+          id: `method:${parsed.name}.${s.name}`,
+          kind: s.kind === vscode.SymbolKind.Constructor ? 'apex-constructor' : 'apex-method',
+          label: s.name,
+          parentClassId: `cls:${parsed.name}`,
+          uri: parsed.uri.toString(),
+          range: rangeToLSP(s.range),
+          returnType: '',
+          parameters: [],
+          accessModifier: 'public',
+          isStatic: false,
+          annotations: [],
+          soqlQueries: [],
+          dmlOperations: [],
+          docComment: parsedM?.docComment,
+        } as ApexMethodNode;
+      })
     : parsed.methods.map((m) => ({
         id: `method:${parsed.name}.${m.name}`,
         kind: m.name === parsed.name ? 'apex-constructor' : 'apex-method',
@@ -77,6 +85,7 @@ function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymb
         annotations: m.annotations,
         soqlQueries: [],
         dmlOperations: [],
+        docComment: m.docComment,
       } as ApexMethodNode));
 
   // SOQL / DML を各メソッドに付与（LSP 範囲が利用可能なら行番号で割り当て）

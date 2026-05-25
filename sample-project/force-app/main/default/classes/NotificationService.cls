@@ -8,6 +8,11 @@ public with sharing class NotificationService extends BaseService {
         super('NotificationService');
     }
 
+    /**
+     * 注文確認を Account に紐づく Contact 全員（最大10件）へ送信する
+     * @param orderId 注文 ID
+     * @param accountId 対象 Account ID
+     */
     @AuraEnabled
     public static void sendOrderConfirmation(Id orderId, Id accountId) {
         List<Contact> contacts = [
@@ -22,10 +27,14 @@ public with sharing class NotificationService extends BaseService {
         }
     }
 
+    // アカウント変更をデバッグログに記録する（本番では外部通知サービスへの連携に置き換え想定）
     public static void notifyAccountUpdate(Id accountId, String changeType) {
         System.debug('Account ' + accountId + ' changed: ' + changeType);
     }
 
+    /**
+     * 複数の受信者に同一件名・本文の通知をまとめて送信する
+     */
     public static void sendBulkNotifications(List<Id> recipientIds, String subject, String body) {
         for (Id recipientId : recipientIds) {
             System.debug('Notifying ' + recipientId + ': ' + subject);
