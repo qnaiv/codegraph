@@ -24,7 +24,7 @@ function eventColor(event: TriggerEvent): string {
 export const ApexTriggerNodeComponent = memo(function ApexTriggerNodeComponent({
   data,
 }: ApexTriggerNodeProps) {
-  const { graphNode: node, isDimmed, onOpenFile, onExpandDownstream, onCollapseDownstream } = data;
+  const { graphNode: node, isDimmed, onExpandDownstream, onCollapseDownstream } = data;
 
   return (
     <>
@@ -44,9 +44,7 @@ export const ApexTriggerNodeComponent = memo(function ApexTriggerNodeComponent({
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 4 }}>
           <span style={{ fontSize: 14 }}>⚡</span>
           <span
-            onClick={onOpenFile}
-            title="ダブルクリックでファイルを開く"
-            style={{ color: '#f0ccf7', fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            style={{ color: '#f0ccf7', fontSize: 12, fontWeight: 600, cursor: 'default' }}
           >
             {node.label}
           </span>
