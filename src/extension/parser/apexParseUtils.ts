@@ -224,7 +224,7 @@ export function extractMethodCalls(
     }
 
     // Instance calls via local variable type declarations: TypeName varName = ...; varName.method(
-    const typeDeclRe = /\b([A-Z]\w*)\s+([a-z_]\w*)\s*(?:[=;{,\[])/g;
+    const typeDeclRe = /\b([A-Z]\w*)\s+([a-z_]\w*)\s*(?:[=;{,[])/g;
     const localTypeMap = new Map<string, string>(); // varName → TypeName
     let td: RegExpExecArray | null;
     while ((td = typeDeclRe.exec(body)) !== null) {
