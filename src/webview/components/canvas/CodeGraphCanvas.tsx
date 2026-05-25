@@ -254,6 +254,7 @@ export function CodeGraphCanvas() {
     const calleeClassIds = new Set<string>([sourceClassId]);
     const calleeMethodIds = new Set<string>();
 
+    // Precise: collect method-level callee info
     for (const e of gEdges) {
       if (e.sourceId !== selectedMethodId) continue;
       if (e.targetId.startsWith('method:')) {
@@ -267,6 +268,17 @@ export function CodeGraphCanvas() {
         calleeClassIds.add(e.targetId);
       }
     }
+
+    // Fallback: always show class-level outgoing neighbors so nodes don't
+    // disappear when method-level call edges haven't been detected
+    for (const e of gEdges) {
+      if (e.sourceId === sourceClassId &&
+          !e.sourceId.startsWith('method:') &&
+          !e.targetId.startsWith('method:')) {
+        calleeClassIds.add(e.targetId);
+      }
+    }
+
     return { sourceClassId, calleeClassIds, calleeMethodIds };
   }, [selectedMethodId, gEdges]);
 
@@ -306,6 +318,7 @@ export function CodeGraphCanvas() {
     if (!methodFocusInfo || !selectedMethodId) return [];
     const seen = new Set<string>();
     const result: GraphEdge[] = [];
+    // Precise: method-level edges with per-Handle routing
     for (const e of gEdges) {
       if (e.sourceId !== selectedMethodId) continue;
       const isMethodTarget = e.targetId.startsWith('method:');
@@ -314,7 +327,6 @@ export function CodeGraphCanvas() {
         : e.targetId.startsWith('sobject:') ? e.targetId : null;
       if (!targetId || targetId === methodFocusInfo.sourceClassId) continue;
       if (!filteredNodeIds.has(targetId)) continue;
-      // Use callee method ID in edge key so multiple calls to same class get separate edges
       const edgeKey = isMethodTarget ? e.targetId : `${targetId}:${e.kind}`;
       const edgeId = `method-focus:${selectedMethodId}:${edgeKey}`;
       if (!seen.has(edgeId)) {
@@ -331,6 +343,23 @@ export function CodeGraphCanvas() {
         });
       }
     }
+
+    // Fallback: when no method-level edges were found, use class-level outgoing edges
+    if (result.length === 0) {
+      for (const e of gEdges) {
+        if (e.sourceId === methodFocusInfo.sourceClassId &&
+            !e.sourceId.startsWith('method:') &&
+            !e.targetId.startsWith('method:') &&
+            filteredNodeIds.has(e.targetId)) {
+          const edgeId = `method-focus-cls:${e.id}`;
+          if (!seen.has(edgeId)) {
+            seen.add(edgeId);
+            result.push({ ...e, id: edgeId });
+          }
+        }
+      }
+    }
+
     return result;
   }, [methodFocusInfo, selectedMethodId, gEdges, filteredNodeIds]);
 
@@ -410,10 +439,14 @@ export function CodeGraphCanvas() {
 
       if (isApexClass(n) && expandedClassIds.has(n.id)) {
         const publicMethods = n.methods.filter(m => m.accessModifier !== 'private');
-        // Callee classes: show only the called methods
+        // Callee classes: show only the specifically-called methods when known;
+        // fall back to all public methods when no method-level edges were detected.
         const isCalleeClass = methodFocusInfo !== null && n.id !== methodFocusInfo.sourceClassId;
-        const shownCount = (isCalleeClass && methodFocusInfo)
-          ? publicMethods.filter(m => methodFocusInfo.calleeMethodIds.has(m.id)).length
+        const hasMethodEdges = (methodFocusInfo?.calleeMethodIds.size ?? 0) > 0;
+        // Pass null when calleeMethodIds is empty so callee classes show all methods
+        const effectiveCalleeMethodIds = hasMethodEdges ? methodFocusInfo!.calleeMethodIds : null;
+        const shownCount = (isCalleeClass && effectiveCalleeMethodIds)
+          ? publicMethods.filter(m => effectiveCalleeMethodIds.has(m.id)).length
           : publicMethods.length;
         // Only the one selected method row is detail-sized; all others stay compact
         const detailCount = (selectedMethodId && publicMethods.some(m => m.id === selectedMethodId)) ? 1 : 0;
@@ -427,7 +460,7 @@ export function CodeGraphCanvas() {
             graphNode: n,
             isContainer: true,
             isCalleeClass,
-            calleeMethodIds: methodFocusInfo?.calleeMethodIds ?? null,
+            calleeMethodIds: effectiveCalleeMethodIds,
             selectedMethodId,
           },
         });
