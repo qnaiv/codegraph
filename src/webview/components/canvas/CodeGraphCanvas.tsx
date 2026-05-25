@@ -25,6 +25,7 @@ import {
 import { ApexClassNodeComponent } from '../nodes/ApexClassNode';
 import { SObjectNodeComponent } from '../nodes/SObjectNode';
 import { ApexTriggerNodeComponent } from '../nodes/ApexTriggerNode';
+import { ApexMethodNodeComponent } from '../nodes/ApexMethodNode';
 import { CodeGraphEdgeComponent } from '../edges/CodeGraphEdge';
 import { applyDagreLayout } from '../../layout/DagreLayout';
 
@@ -32,9 +33,10 @@ import { applyDagreLayout } from '../../layout/DagreLayout';
 // React Flow type registrations
 // -----------------------------------------------------------------------
 const nodeTypes: NodeTypes = {
-  apexClass: ApexClassNodeComponent,
-  sobject: SObjectNodeComponent,
+  apexClass:   ApexClassNodeComponent,
+  sobject:     SObjectNodeComponent,
   apexTrigger: ApexTriggerNodeComponent,
+  apexMethod:  ApexMethodNodeComponent,
 };
 
 const edgeTypes: EdgeTypes = {
@@ -42,36 +44,55 @@ const edgeTypes: EdgeTypes = {
 };
 
 // -----------------------------------------------------------------------
-// Graph node → React Flow Node conversion
+// Container sizing constants
+// -----------------------------------------------------------------------
+const CONTAINER_W        = 200;
+const CONTAINER_HEADER_H = 56;
+const METHOD_H           = 50;
+const METHOD_GAP         = 4;
+const CONTAINER_PAD_B    = 10;
+
+function containerSize(methodCount: number) {
+  const height = methodCount > 0
+    ? CONTAINER_HEADER_H + methodCount * (METHOD_H + METHOD_GAP) + CONTAINER_PAD_B
+    : 80;
+  return { width: CONTAINER_W, height };
+}
+
+// -----------------------------------------------------------------------
+// Helpers
 // -----------------------------------------------------------------------
 function nodeTypeForKind(kind: GraphNode['kind']): string {
   switch (kind) {
     case 'apex-class':
     case 'apex-interface':
-    case 'apex-enum':
-      return 'apexClass';
-    case 'apex-trigger':
-      return 'apexTrigger';
-    case 'sobject':
-      return 'sobject';
-    default:
-      return 'default';
+    case 'apex-enum':    return 'apexClass';
+    case 'apex-trigger': return 'apexTrigger';
+    case 'apex-method':
+    case 'apex-constructor': return 'apexMethod';
+    case 'sobject':      return 'sobject';
+    default:             return 'default';
   }
+}
+
+function isApexClass(n: GraphNode): n is ApexClassNode {
+  return n.kind === 'apex-class' || n.kind === 'apex-interface' || n.kind === 'apex-enum';
 }
 
 function toRFNode(
   gNode: GraphNode,
   pos: { x: number; y: number },
+  existingStyle: React.CSSProperties | undefined,
   isSelected: boolean,
   isReferenced: boolean,
-  isAnySelected: boolean,
+  isAnySelectedForDim: boolean,
   onOpenFile: () => void,
+  isContainer: boolean,
   onExpandDownstream: (() => void) | undefined,
   onCollapseDownstream: (() => void) | undefined,
 ): Node {
-  const isDimmed = isAnySelected && !isSelected && !isReferenced;
+  const isDimmed = isAnySelectedForDim && !isSelected && !isReferenced;
   const isHighlighted = isSelected || isReferenced;
-
   return {
     id: gNode.id,
     type: nodeTypeForKind(gNode.kind),
@@ -81,12 +102,14 @@ function toRFNode(
       isDimmed,
       isHighlighted,
       onOpenFile,
+      isContainer,
       onExpandDownstream,
       onCollapseDownstream,
     },
-    style: isHighlighted
-      ? { boxShadow: `0 0 0 2px ${isSelected ? '#ff8c00' : '#ffd700'}`, borderRadius: 8 }
-      : undefined,
+    style: {
+      ...existingStyle,
+      ...(isHighlighted ? { boxShadow: `0 0 0 2px ${isSelected ? '#ff8c00' : '#ffd700'}`, borderRadius: 8 } : {}),
+    },
   };
 }
 
@@ -110,13 +133,11 @@ function toRFEdge(gEdge: GraphEdge, isHighlighted: boolean, isAnySelected: boole
 // -----------------------------------------------------------------------
 function ProgressOverlay({ stage, percent }: { stage: string; percent: number }) {
   return (
-    <div
-      style={{
-        position: 'absolute', inset: 0, zIndex: 10,
-        display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-        background: 'rgba(10,10,20,0.88)', color: '#cce4f7',
-      }}
-    >
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 10,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(10,10,20,0.88)', color: '#cce4f7',
+    }}>
       <div style={{ fontSize: 14, marginBottom: 12 }}>{stage}</div>
       <div style={{ width: 240, height: 6, background: '#333', borderRadius: 3 }}>
         <div style={{ width: `${percent}%`, height: '100%', background: '#4a90d9', borderRadius: 3, transition: 'width 0.3s' }} />
@@ -127,7 +148,7 @@ function ProgressOverlay({ stage, percent }: { stage: string; percent: number })
 }
 
 // -----------------------------------------------------------------------
-// Filter toggle button
+// Toggle button
 // -----------------------------------------------------------------------
 function FilterToggle({ label, active, onToggle }: { label: string; active: boolean; onToggle: (v: boolean) => void }) {
   return (
@@ -155,6 +176,8 @@ export function CodeGraphCanvas() {
     layoutState,
     viewState,
     progress,
+    showMethodLevel,
+    toggleMethodLevel,
     focusRootId,
     focusUpstreamIds,
     focusExpandedIds,
@@ -226,10 +249,49 @@ export function CodeGraphCanvas() {
 
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
 
-  const filteredEdges = useMemo(
-    () => gEdges.filter((e) => filteredNodeIds.has(e.sourceId) && filteredNodeIds.has(e.targetId)),
-    [gEdges, filteredNodeIds]
-  );
+  // メソッドレベル表示時に可視メソッドの ID セットを構築
+  const visibleMethodIds = useMemo(() => {
+    if (!showMethodLevel) return null;
+    const ids = new Set<string>();
+    for (const n of filteredNodes) {
+      if (isApexClass(n)) {
+        for (const m of n.methods) {
+          if (m.accessModifier !== 'private') ids.add(m.id);
+        }
+      }
+    }
+    return ids;
+  }, [showMethodLevel, filteredNodes]);
+
+  const filteredEdges = useMemo(() => {
+    if (showMethodLevel && visibleMethodIds) {
+      return gEdges.filter((e) => {
+        const srcIsMethod = e.sourceId.startsWith('method:');
+        const tgtIsMethod = e.targetId.startsWith('method:');
+        if (srcIsMethod || tgtIsMethod) {
+          const srcOk = srcIsMethod ? visibleMethodIds.has(e.sourceId) : filteredNodeIds.has(e.sourceId);
+          const tgtOk = tgtIsMethod ? visibleMethodIds.has(e.targetId) : filteredNodeIds.has(e.targetId);
+          return srcOk && tgtOk;
+        }
+        // クラスレベルの calls/instantiates/soql/dml はメソッドレベルで置換するため非表示
+        if (
+          e.kind === 'calls' || e.kind === 'instantiates' ||
+          e.kind === 'soql-references' || e.kind.startsWith('dml-')
+        ) {
+          return false;
+        }
+        return filteredNodeIds.has(e.sourceId) && filteredNodeIds.has(e.targetId);
+      });
+    }
+    // クラスレベル表示: メソッドレベルエッジを除外
+    return gEdges.filter(
+      (e) =>
+        !e.sourceId.startsWith('method:') &&
+        !e.targetId.startsWith('method:') &&
+        filteredNodeIds.has(e.sourceId) &&
+        filteredNodeIds.has(e.targetId),
+    );
+  }, [gEdges, filteredNodeIds, showMethodLevel, visibleMethodIds]);
 
   // Per-node expand/collapse state in focus mode
   const nodeExpandState = useMemo(() => {
@@ -263,59 +325,123 @@ export function CodeGraphCanvas() {
     return refs;
   }, [hasSelection, focusRootId, highlightedEdgeIds, gEdges]);
 
-  // Build RF nodes: run Dagre only on first load (no existing layout positions)
-  const rfNodesBase = useMemo(() => {
-    const needsLayout = !filteredNodes.some((n) => layoutState[n.id]);
+  // In focus mode, suppress dim effect
+  const isAnySelectedForDim = hasSelection && !focusRootId;
 
+  // -----------------------------------------------------------------------
+  // Build RF nodes: method-level containers OR flat class nodes
+  // -----------------------------------------------------------------------
+  const rfNodesBase = useMemo(() => {
+    if (showMethodLevel) {
+      const containerNodes: Node[] = [];
+      const methodNodes: Node[] = [];
+
+      for (const n of filteredNodes) {
+        const pos = layoutState[n.id] ?? { x: 0, y: 0 };
+
+        if (isApexClass(n)) {
+          const publicMethods = n.methods.filter(m => m.accessModifier !== 'private');
+          const { width, height } = containerSize(publicMethods.length);
+          containerNodes.push({
+            id: n.id,
+            type: 'apexClass',
+            position: pos,
+            style: { width, height },
+            data: { graphNode: n, isContainer: true },
+          });
+          publicMethods.forEach((method, i) => {
+            methodNodes.push({
+              id: method.id,
+              type: 'apexMethod',
+              position: {
+                x: 8,
+                y: CONTAINER_HEADER_H + i * (METHOD_H + METHOD_GAP),
+              },
+              parentId: n.id,
+              extent: 'parent' as const,
+              draggable: false,
+              selectable: false,
+              data: { graphNode: method },
+            });
+          });
+        } else {
+          containerNodes.push({
+            id: n.id,
+            type: nodeTypeForKind(n.kind),
+            position: pos,
+            data: { graphNode: n },
+          });
+        }
+      }
+
+      // Dagre on container nodes only (method children are positioned inside)
+      const needsLayout = !containerNodes.some((cn) => layoutState[cn.id]);
+      const containerIdSet = new Set(containerNodes.map(cn => cn.id));
+      // レイアウト用エッジはコンテナ間のクラスレベルエッジのみ使用
+      const rfEdgesForLayout: Edge[] = gEdges
+        .filter(e =>
+          !e.sourceId.startsWith('method:') &&
+          !e.targetId.startsWith('method:') &&
+          containerIdSet.has(e.sourceId) &&
+          containerIdSet.has(e.targetId),
+        )
+        .map((e) => ({ id: e.id, source: e.sourceId, target: e.targetId }));
+      const laid = needsLayout
+        ? applyDagreLayout(containerNodes, rfEdgesForLayout, 'LR')
+        : containerNodes;
+
+      return [...laid, ...methodNodes];
+    }
+
+    // Flat class-level mode
+    const needsLayout = !filteredNodes.some((n) => layoutState[n.id]);
     const withPos: Node[] = filteredNodes.map((n, i): Node => {
       const col = i % 5;
       const row = Math.floor(i / 5);
       const pos = layoutState[n.id] ?? { x: col * 220, y: row * 160 };
-      return {
-        id: n.id,
-        type: nodeTypeForKind(n.kind),
-        position: pos,
-        data: { graphNode: n },
-      };
+      return { id: n.id, type: nodeTypeForKind(n.kind), position: pos, data: { graphNode: n } };
     });
-
     const rfEdgesForLayout: Edge[] = filteredEdges.map((e) => ({
       id: e.id, source: e.sourceId, target: e.targetId,
     }));
-
     if (needsLayout) {
       return applyDagreLayout(withPos, rfEdgesForLayout, 'LR');
     }
     return withPos;
-  }, [filteredNodes, filteredEdges, layoutState]);
+  }, [filteredNodes, filteredEdges, gEdges, layoutState, showMethodLevel]);
 
-  // In focus mode, suppress dim effect (only relevant nodes are shown)
-  const isAnySelectedForDim = hasSelection && !focusRootId;
-
+  // Merge highlight / dim state onto top-level nodes; pass through method child nodes as-is
   const rfNodes: Node[] = useMemo(() =>
     rfNodesBase.map((rfNode) => {
+      // Method child nodes: no interaction state needed
+      if (rfNode.parentId) return rfNode;
+
       const gNode = gNodes.find((n) => n.id === rfNode.id);
       if (!gNode) return rfNode;
-      const isSelected = selectedNodeIds.includes(rfNode.id);
+
+      const isSelected  = selectedNodeIds.includes(rfNode.id);
       const isReferenced = referencedNodeIds.has(rfNode.id);
       const onOpenFile = () => {
         if (hasLocation(gNode)) {
           postMessage({ type: 'OPEN_FILE', payload: { uri: gNode.uri, range: gNode.range } });
         }
       };
+      const containerFlag = showMethodLevel && isApexClass(gNode);
       const expandState = nodeExpandState.get(rfNode.id);
       return toRFNode(
         gNode,
         rfNode.position,
+        rfNode.style as React.CSSProperties | undefined,
         isSelected,
         isReferenced,
         isAnySelectedForDim,
         onOpenFile,
+        containerFlag,
         expandState?.canExpand ? () => expandFocusDownstream(rfNode.id) : undefined,
         expandState?.canCollapse ? () => collapseFocusDownstream(rfNode.id) : undefined,
       );
     }),
-  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, isAnySelectedForDim, nodeExpandState, expandFocusDownstream, collapseFocusDownstream]);
+  [rfNodesBase, gNodes, selectedNodeIds, referencedNodeIds, isAnySelectedForDim, showMethodLevel, nodeExpandState, expandFocusDownstream, collapseFocusDownstream]);
 
   const rfEdges: Edge[] = useMemo(() =>
     filteredEdges.map((e) => toRFEdge(e, highlightedEdgeIds.includes(e.id), isAnySelectedForDim)),
@@ -346,13 +472,15 @@ export function CodeGraphCanvas() {
     []
   );
 
-  // Single click: enter focus mode
+  // Single click: enter focus mode (method child nodes: ignore)
   const onNodeClick = useCallback((_: React.MouseEvent, node: Node) => {
+    if (node.parentId) return;
     enterFocus(node.id, baseNodeIds);
   }, [enterFocus, baseNodeIds]);
 
   // Double click: open file in editor
   const onNodeDoubleClick = useCallback((_: React.MouseEvent, node: Node) => {
+    if (node.parentId) return;
     const gNode = gNodes.find((n) => n.id === node.id);
     if (!gNode || !hasLocation(gNode)) return;
     postMessage({ type: 'OPEN_FILE', payload: { uri: gNode.uri, range: gNode.range } });
@@ -385,7 +513,7 @@ export function CodeGraphCanvas() {
         onPaneClick={onPaneClick}
         fitView
         colorMode="dark"
-        minZoom={0.08}
+        minZoom={0.05}
         maxZoom={4}
         proOptions={{ hideAttribution: true }}
       >
@@ -395,6 +523,7 @@ export function CodeGraphCanvas() {
           nodeColor={(node) => {
             if (node.id.startsWith('sobject:')) return '#4a9d4a';
             if (node.id.startsWith('trigger:')) return '#9d4a9d';
+            if (node.id.startsWith('method:'))  return '#2a4060';
             return '#4a90d9';
           }}
           style={{ background: '#0e1018', border: '1px solid #222' }}
@@ -485,6 +614,11 @@ export function CodeGraphCanvas() {
           active={activeFilters.hideManagedPackages}
           onToggle={(v) => useGraphStore.getState().updateFilter({ hideManagedPackages: v })}
         />
+        <FilterToggle
+          label="メソッドレベル"
+          active={showMethodLevel}
+          onToggle={toggleMethodLevel}
+        />
 
         {/* 追従モードトグル */}
         <button
@@ -552,6 +686,9 @@ export function CodeGraphCanvas() {
           ) : (
             <>
               <span>{filteredNodes.length} nodes · {filteredEdges.length} edges{activeFocusLabel ? ` · 深度${scanDepth}` : ''}</span>
+              {showMethodLevel && (
+                <span style={{ color: '#4a90d9' }}>メソッドレベル表示中</span>
+              )}
               {filteredEdges.some((e) => e.kind === 'instantiates' || e.kind === 'calls') && (
                 <span style={{ display: 'flex', gap: 4 }}>
                   {filteredEdges.filter((e) => e.kind === 'instantiates').length > 0 && (

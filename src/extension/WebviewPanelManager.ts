@@ -28,6 +28,7 @@ export class WebviewPanelManager {
   private scanDepth: 1 | 2 | 3 = 2;
   private followMode = false;
   private currentFocusUri: vscode.Uri | undefined;
+  private pendingBootstrapUri: vscode.Uri | undefined;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -37,6 +38,12 @@ export class WebviewPanelManager {
     if (this.panel) {
       this.panel.reveal();
       return;
+    }
+
+    // Capture the active editor before the webview panel steals focus
+    const activeEditor = vscode.window.activeTextEditor;
+    if (activeEditor && this.isApexFile(activeEditor.document.uri)) {
+      this.pendingBootstrapUri = activeEditor.document.uri;
     }
 
     this.panel = vscode.window.createWebviewPanel(
@@ -133,9 +140,10 @@ export class WebviewPanelManager {
   }
 
   private async bootstrapFromActiveEditor() {
-    const editor = vscode.window.activeTextEditor;
-    if (editor && this.isApexFile(editor.document.uri)) {
-      await this.buildFocused(editor.document.uri);
+    const uri = this.pendingBootstrapUri ?? vscode.window.activeTextEditor?.document.uri;
+    this.pendingBootstrapUri = undefined;
+    if (uri && this.isApexFile(uri)) {
+      await this.buildFocused(uri);
     } else {
       this.post({ type: 'GRAPH_UPDATE', payload: emptySnapshot() });
     }

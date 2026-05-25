@@ -14,6 +14,7 @@ import {
 import { extractSOQL, extractDML } from '../parser/SOQLExtractor';
 import { parseSObjectDirectory, parseSObjectMeta } from '../parser/SObjectMetaParser';
 import { parseApexDirectory, parseApexSource, ParsedApexClass, ParsedApexTrigger } from '../parser/ApexSourceParser';
+import { extractMethodCalls } from '../parser/apexParseUtils';
 import { executeReferences } from '../lsp/LspClient';
 
 // -----------------------------------------------------------------------
@@ -78,13 +79,36 @@ function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymb
         dmlOperations: [],
       } as ApexMethodNode));
 
+  // SOQL / DML を各メソッドに付与（LSP 範囲が利用可能なら行番号で割り当て）
   const allSOQL = extractSOQL(parsed.source);
   const allDML  = extractDML(parsed.source);
 
-  if (methods.length > 0) {
-    const firstNonConstructor = methods.find((m) => m.kind === 'apex-method') ?? methods[0];
-    firstNonConstructor.soqlQueries = allSOQL;
-    firstNonConstructor.dmlOperations = allDML;
+  const hasRanges = methods.some(m => m.range.end.line > m.range.start.line);
+  if (hasRanges) {
+    for (const method of methods) {
+      method.soqlQueries   = allSOQL.filter(q =>
+        q.range.start.line >= method.range.start.line &&
+        q.range.start.line <= method.range.end.line,
+      );
+      method.dmlOperations = allDML.filter(d =>
+        d.range.start.line >= method.range.start.line &&
+        d.range.start.line <= method.range.end.line,
+      );
+    }
+    // 未割り当て分を最初のメソッドに付与
+    const matchedSOQL = new Set(methods.flatMap(m => m.soqlQueries));
+    const matchedDML  = new Set(methods.flatMap(m => m.dmlOperations));
+    const first = methods.find(m => m.kind === 'apex-method') ?? methods[0];
+    if (first) {
+      first.soqlQueries   = [...first.soqlQueries,   ...allSOQL.filter(q => !matchedSOQL.has(q))];
+      first.dmlOperations = [...first.dmlOperations, ...allDML.filter(d => !matchedDML.has(d))];
+    }
+  } else {
+    if (methods.length > 0) {
+      const firstNonConstructor = methods.find((m) => m.kind === 'apex-method') ?? methods[0];
+      firstNonConstructor.soqlQueries   = allSOQL;
+      firstNonConstructor.dmlOperations = allDML;
+    }
   }
 
   const lspClassSymbol = lspSymbols.find(
@@ -298,6 +322,86 @@ async function buildNodesAndEdges(
   for (const trigger of parsedTriggers) {
     const sobjectId = `sobject:${trigger.targetSObject}`;
     addEdge({ id: `edge:trigger-on:trigger:${trigger.name}:${sobjectId}`, kind: 'trigger-on', sourceId: `trigger:${trigger.name}`, targetId: sobjectId });
+  }
+
+  onProgress?.('メソッドレベルエッジを構築中…', 90);
+
+  // 9. メソッドレベルエッジ（method → SObject, method → method）
+  for (const [, parsed] of parsedClasses) {
+    const classNode = classNodes.get(parsed.name);
+    if (!classNode) continue;
+
+    const visibleMethods = classNode.methods.filter(m => m.accessModifier !== 'private');
+
+    // 9a. Method → SObject（各メソッドの SOQL/DML から生成）
+    for (const method of visibleMethods) {
+      for (const q of method.soqlQueries) {
+        if (sobjectIndex.has(q.fromObject)) {
+          addEdge({
+            id: `edge:soql:${method.id}:sobject:${q.fromObject}`,
+            kind: 'soql-references',
+            sourceId: method.id,
+            targetId: `sobject:${q.fromObject}`,
+          });
+        }
+        for (const extra of q.additionalObjects) {
+          if (sobjectIndex.has(extra)) {
+            addEdge({
+              id: `edge:soql:${method.id}:sobject:${extra}`,
+              kind: 'soql-references',
+              sourceId: method.id,
+              targetId: `sobject:${extra}`,
+            });
+          }
+        }
+      }
+      for (const dml of method.dmlOperations) {
+        if (sobjectIndex.has(dml.targetType)) {
+          const kind = dml.type === 'insert' || dml.type === 'upsert' ? 'dml-insert'
+            : dml.type === 'delete' || dml.type === 'undelete'        ? 'dml-delete'
+            : 'dml-update';
+          addEdge({
+            id: `edge:dml:${method.id}:sobject:${dml.targetType}:${kind}`,
+            kind,
+            sourceId: method.id,
+            targetId: `sobject:${dml.targetType}`,
+          });
+        }
+      }
+    }
+
+    // 9b. Method → Method（クロスクラス静的呼び出し＋同一クラス内呼び出し）
+    const visibleMethodNames = new Set(visibleMethods.map(m => m.label));
+    const methodCallsInfo = extractMethodCalls(parsed.source, visibleMethodNames);
+
+    for (const { methodName, crossClassCalls, intraClassCalls } of methodCallsInfo) {
+      const sourceMethodId = `method:${parsed.name}.${methodName}`;
+      if (!visibleMethods.some(m => m.id === sourceMethodId)) continue;
+
+      for (const { targetClass, targetMethod } of crossClassCalls) {
+        const targetClassNode = classNodes.get(targetClass);
+        if (!targetClassNode) continue;
+        const targetMethodId = `method:${targetClass}.${targetMethod}`;
+        if (!targetClassNode.methods.some(m => m.id === targetMethodId && m.accessModifier !== 'private')) continue;
+        addEdge({
+          id: `edge:calls:${sourceMethodId}:${targetMethodId}`,
+          kind: 'calls',
+          sourceId: sourceMethodId,
+          targetId: targetMethodId,
+        });
+      }
+
+      for (const callee of intraClassCalls) {
+        const targetMethodId = `method:${parsed.name}.${callee}`;
+        if (!visibleMethods.some(m => m.id === targetMethodId)) continue;
+        addEdge({
+          id: `edge:calls:${sourceMethodId}:${targetMethodId}`,
+          kind: 'calls',
+          sourceId: sourceMethodId,
+          targetId: targetMethodId,
+        });
+      }
+    }
   }
 
   return { nodes, edges };
