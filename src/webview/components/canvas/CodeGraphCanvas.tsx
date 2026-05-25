@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   ReactFlow,
   Background,
@@ -353,6 +353,8 @@ export function CodeGraphCanvas() {
   // Build RF nodes: containers (HTML method list) or flat class nodes
   // No React Flow method child nodes — methods are HTML inside container
   // -----------------------------------------------------------------------
+  const pendingLayoutRef = useRef(false);
+
   const rfNodesBase = useMemo(() => {
     const topLevelNodes: Node[] = [];
 
@@ -393,19 +395,25 @@ export function CodeGraphCanvas() {
     }
 
     const needsLayout = !topLevelNodes.some((cn) => layoutState[cn.id]);
+    pendingLayoutRef.current = needsLayout;
     if (needsLayout) {
       const rfEdgesForLayout: Edge[] = filteredEdges.map((e) => ({
         id: e.id, source: e.sourceId, target: e.targetId,
       }));
-      const laidOut = applyDagreLayout(topLevelNodes, rfEdgesForLayout, 'LR');
-      const positions: Record<string, { x: number; y: number }> = {};
-      for (const n of laidOut) positions[n.id] = n.position;
-      useGraphStore.getState().setLayoutState(positions);
-      postMessage({ type: 'SAVE_LAYOUT', payload: { positions } });
-      return laidOut;
+      return applyDagreLayout(topLevelNodes, rfEdgesForLayout, 'LR');
     }
     return topLevelNodes;
   }, [filteredNodes, filteredEdges, layoutState, expandedClassIds, methodFocusInfo, selectedMethodId]);
+
+  // Persist initial Dagre layout after render (must not be called during render)
+  useEffect(() => {
+    if (!pendingLayoutRef.current) return;
+    pendingLayoutRef.current = false;
+    const positions: Record<string, { x: number; y: number }> = {};
+    for (const n of rfNodesBase) positions[n.id] = n.position;
+    useGraphStore.getState().setLayoutState(positions);
+    postMessage({ type: 'SAVE_LAYOUT', payload: { positions } });
+  }, [rfNodesBase]);
 
   // Method click callback
   const handleMethodClick = useCallback((methodId: string) => {
