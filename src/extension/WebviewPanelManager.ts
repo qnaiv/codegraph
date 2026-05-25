@@ -29,6 +29,8 @@ export class WebviewPanelManager {
   private followMode = false;
   private currentFocusUri: vscode.Uri | undefined;
   private pendingBootstrapUri: vscode.Uri | undefined;
+  private readonly snapshotCache = new Map<string, GraphSnapshot>();
+  private static readonly MAX_CACHE_SIZE = 10;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -150,15 +152,23 @@ export class WebviewPanelManager {
   }
 
   private async buildFocused(uri: vscode.Uri) {
+    this.currentFocusUri = uri;
+    const label = path.basename(uri.fsPath);
+    this.post({ type: 'ACTIVE_FILE_CHANGED', payload: { label, uri: uri.toString() } });
+
+    const cacheKey = `${uri.toString()}:${this.scanDepth}`;
+    const cached = this.snapshotCache.get(cacheKey);
+    if (cached) {
+      this.store.setSnapshot(cached);
+      this.post({ type: 'GRAPH_UPDATE', payload: cached });
+      return;
+    }
+
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
     if (!workspaceRoot) {
       this.post({ type: 'ERROR', payload: { message: 'No workspace folder open.', code: 'NO_WORKSPACE' } });
       return;
     }
-
-    this.currentFocusUri = uri;
-    const label = path.basename(uri.fsPath);
-    this.post({ type: 'ACTIVE_FILE_CHANGED', payload: { label, uri: uri.toString() } });
 
     try {
       const snapshot = await buildFocusedSnapshot(
@@ -167,6 +177,11 @@ export class WebviewPanelManager {
         this.scanDepth,
         (stage, percent) => this.post({ type: 'PROGRESS', payload: { stage, percent } })
       );
+      if (this.snapshotCache.size >= WebviewPanelManager.MAX_CACHE_SIZE) {
+        const oldest = this.snapshotCache.keys().next().value;
+        if (oldest) this.snapshotCache.delete(oldest);
+      }
+      this.snapshotCache.set(cacheKey, snapshot);
       this.store.setSnapshot(snapshot);
       this.post({ type: 'GRAPH_UPDATE', payload: snapshot });
       this.setupFileWatcher(workspaceRoot);
@@ -177,6 +192,7 @@ export class WebviewPanelManager {
 
   private async runFullScan(workspaceRoot: string) {
     this.currentFocusUri = undefined;
+    this.snapshotCache.clear();
     try {
       const snapshot = await buildGraphSnapshot(workspaceRoot, (stage, percent) => {
         this.post({ type: 'PROGRESS', payload: { stage, percent } });
@@ -192,6 +208,7 @@ export class WebviewPanelManager {
   private setupFileWatcher(workspaceRoot: string) {
     this.fileWatcher?.dispose();
     this.fileWatcher = createFileWatcher(workspaceRoot, async () => {
+      this.snapshotCache.clear();
       if (this.currentFocusUri) {
         await this.buildFocused(this.currentFocusUri);
       }
