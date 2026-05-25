@@ -24,7 +24,9 @@ export class WebviewPanelManager {
   private readonly context: vscode.ExtensionContext;
   private readonly store = new GraphStore();
   private fileWatcher: vscode.Disposable | undefined;
+  private editorListener: vscode.Disposable | undefined;
   private scanDepth: 1 | 2 | 3 = 2;
+  private followMode = false;
   private currentFocusUri: vscode.Uri | undefined;
 
   constructor(context: vscode.ExtensionContext) {
@@ -61,6 +63,14 @@ export class WebviewPanelManager {
     this.panel.onDidDispose(() => {
       this.panel = undefined;
       this.fileWatcher?.dispose();
+      this.editorListener?.dispose();
+    });
+
+    this.editorListener = vscode.window.onDidChangeActiveTextEditor(async (editor: vscode.TextEditor | undefined) => {
+      if (!this.followMode || !this.panel) return;
+      if (!editor || !this.isApexFile(editor.document.uri)) return;
+      if (editor.document.uri.toString() === this.currentFocusUri?.toString()) return;
+      await this.buildFocused(editor.document.uri);
     });
   }
 
@@ -70,6 +80,7 @@ export class WebviewPanelManager {
 
   dispose() {
     this.fileWatcher?.dispose();
+    this.editorListener?.dispose();
     this.panel?.dispose();
   }
 
@@ -106,6 +117,10 @@ export class WebviewPanelManager {
 
       case 'SAVE_LAYOUT':
         this.store.updateLayout(msg.payload.positions);
+        break;
+
+      case 'FOLLOW_MODE':
+        this.followMode = msg.payload.enabled;
         break;
 
       case 'REFRESH_GRAPH': {

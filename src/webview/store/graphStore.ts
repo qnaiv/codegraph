@@ -69,6 +69,7 @@ interface GraphStore {
   // オンデマンドスキャン状態
   activeFocusLabel: string;
   scanDepth: 1 | 2 | 3;
+  followMode: boolean;
 
   setSnapshot: (snapshot: GraphSnapshot) => void;
   setGranularity: (level: GranularityLevel) => void;
@@ -86,6 +87,7 @@ interface GraphStore {
   setSearchQuery: (q: string) => void;
   setActiveFocusLabel: (label: string) => void;
   setScanDepth: (d: 1 | 2 | 3) => void;
+  setFollowMode: (enabled: boolean) => void;
 }
 
 export const useGraphStore = create<GraphStore>((set, get) => ({
@@ -103,6 +105,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   searchQuery: '',
   activeFocusLabel: '',
   scanDepth: 2,
+  followMode: false,
 
   setSnapshot(snapshot) {
     set({
@@ -258,5 +261,9 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   setScanDepth(d) {
     set({ scanDepth: d });
+  },
+
+  setFollowMode(enabled) {
+    set({ followMode: enabled });
   },
 }));

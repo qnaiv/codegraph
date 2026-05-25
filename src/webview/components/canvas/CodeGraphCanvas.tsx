@@ -162,6 +162,7 @@ export function CodeGraphCanvas() {
     searchQuery,
     activeFocusLabel,
     scanDepth,
+    followMode,
     enterFocus,
     expandFocusDownstream,
     collapseFocusDownstream,
@@ -169,6 +170,7 @@ export function CodeGraphCanvas() {
     exitFocus,
     setSearchQuery,
     setScanDepth,
+    setFollowMode,
   } = useGraphStore();
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
@@ -483,6 +485,24 @@ export function CodeGraphCanvas() {
           active={activeFilters.hideManagedPackages}
           onToggle={(v) => useGraphStore.getState().updateFilter({ hideManagedPackages: v })}
         />
+
+        {/* 追従モードトグル */}
+        <button
+          onClick={() => {
+            const next = !followMode;
+            setFollowMode(next);
+            postMessage({ type: 'FOLLOW_MODE', payload: { enabled: next } });
+          }}
+          title={followMode ? 'エディタ追従: ON（クリックでOFF）' : 'エディタ追従: OFF（クリックでON）'}
+          style={{
+            background: followMode ? '#1a3a2a' : '#1e1e2e',
+            color: followMode ? '#4acca4' : '#666',
+            border: `1px solid ${followMode ? '#2a9d6a' : '#333'}`,
+            borderRadius: 4, padding: '3px 9px', fontSize: 11, cursor: 'pointer',
+          }}
+        >
+          {followMode ? '追従 ON' : '追従 OFF'}
+        </button>
 
         {/* 全スキャンボタン */}
         <button
