@@ -1,17 +1,36 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as fs from 'fs';
-import { ExtensionToWebviewMessage, WebviewToExtensionMessage } from '../shared/types';
+import { ExtensionToWebviewMessage, WebviewToExtensionMessage, GraphSnapshot } from '../shared/types';
 import { GraphStore } from './graph/GraphStore';
-import { buildGraphSnapshot } from './graph/GraphBuilder';
+import { buildGraphSnapshot, buildFocusedSnapshot, defaultViewState } from './graph/GraphBuilder';
 import { resolveReferences } from './lsp/ReferenceResolver';
 import { createFileWatcher } from './FileWatcher';
+
+function emptySnapshot(): GraphSnapshot {
+  return {
+    version: 1,
+    projectRoot: '',
+    nodes: [],
+    edges: [],
+    annotations: [],
+    layoutState: {},
+    viewState: defaultViewState,
+  };
+}
 
 export class WebviewPanelManager {
   private panel: vscode.WebviewPanel | undefined;
   private readonly context: vscode.ExtensionContext;
   private readonly store = new GraphStore();
   private fileWatcher: vscode.Disposable | undefined;
+  private editorListener: vscode.Disposable | undefined;
+  private scanDepth: 1 | 2 | 3 = 2;
+  private followMode = false;
+  private currentFocusUri: vscode.Uri | undefined;
+  private pendingBootstrapUri: vscode.Uri | undefined;
+  private readonly snapshotCache = new Map<string, GraphSnapshot>();
+  private static readonly MAX_CACHE_SIZE = 10;
 
   constructor(context: vscode.ExtensionContext) {
     this.context = context;
@@ -21,6 +40,12 @@ export class WebviewPanelManager {
     if (this.panel) {
       this.panel.reveal();
       return;
+    }
+
+    // Capture the active editor before the webview panel steals focus
+    const activeEditor = vscode.window.activeTextEditor;
+    if (activeEditor && this.isApexFile(activeEditor.document.uri)) {
+      this.pendingBootstrapUri = activeEditor.document.uri;
     }
 
     this.panel = vscode.window.createWebviewPanel(
@@ -47,6 +72,14 @@ export class WebviewPanelManager {
     this.panel.onDidDispose(() => {
       this.panel = undefined;
       this.fileWatcher?.dispose();
+      this.editorListener?.dispose();
+    });
+
+    this.editorListener = vscode.window.onDidChangeActiveTextEditor(async (editor: vscode.TextEditor | undefined) => {
+      if (!this.followMode || !this.panel) return;
+      if (!editor || !this.isApexFile(editor.document.uri)) return;
+      if (editor.document.uri.toString() === this.currentFocusUri?.toString()) return;
+      await this.buildFocused(editor.document.uri);
     });
   }
 
@@ -56,13 +89,19 @@ export class WebviewPanelManager {
 
   dispose() {
     this.fileWatcher?.dispose();
+    this.editorListener?.dispose();
     this.panel?.dispose();
   }
 
   private async handleMessage(msg: WebviewToExtensionMessage) {
     switch (msg.type) {
       case 'READY':
-        await this.bootstrapGraph();
+        await this.bootstrapFromActiveEditor();
+        break;
+
+      case 'SET_SCAN_DEPTH':
+        this.scanDepth = msg.payload.depth;
+        if (this.currentFocusUri) await this.buildFocused(this.currentFocusUri);
         break;
 
       case 'GET_REFERENCES': {
@@ -89,22 +128,71 @@ export class WebviewPanelManager {
         this.store.updateLayout(msg.payload.positions);
         break;
 
-      case 'REFRESH_GRAPH':
-        await this.bootstrapGraph();
+      case 'FOLLOW_MODE':
+        this.followMode = msg.payload.enabled;
         break;
+
+      case 'REFRESH_GRAPH': {
+        // 全スキャン（opt-in）
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (workspaceRoot) await this.runFullScan(workspaceRoot);
+        break;
+      }
     }
   }
 
-  private async bootstrapGraph() {
-    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-    if (!workspaceRoot) {
-      this.post({
-        type: 'ERROR',
-        payload: { message: 'No workspace folder open.', code: 'NO_WORKSPACE' },
-      });
+  private async bootstrapFromActiveEditor() {
+    const uri = this.pendingBootstrapUri ?? vscode.window.activeTextEditor?.document.uri;
+    this.pendingBootstrapUri = undefined;
+    if (uri && this.isApexFile(uri)) {
+      await this.buildFocused(uri);
+    } else {
+      this.post({ type: 'GRAPH_UPDATE', payload: emptySnapshot() });
+    }
+  }
+
+  private async buildFocused(uri: vscode.Uri) {
+    this.currentFocusUri = uri;
+    const label = path.basename(uri.fsPath);
+    this.post({ type: 'ACTIVE_FILE_CHANGED', payload: { label, uri: uri.toString() } });
+
+    const cacheKey = `${uri.toString()}:${this.scanDepth}`;
+    const cached = this.snapshotCache.get(cacheKey);
+    if (cached) {
+      this.store.setSnapshot(cached);
+      this.post({ type: 'GRAPH_UPDATE', payload: cached });
       return;
     }
 
+    const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+    if (!workspaceRoot) {
+      this.post({ type: 'ERROR', payload: { message: 'No workspace folder open.', code: 'NO_WORKSPACE' } });
+      return;
+    }
+
+    try {
+      const snapshot = await buildFocusedSnapshot(
+        uri,
+        workspaceRoot,
+        this.scanDepth,
+        (stage, percent) => this.post({ type: 'PROGRESS', payload: { stage, percent } })
+      );
+      if (this.snapshotCache.size >= WebviewPanelManager.MAX_CACHE_SIZE) {
+        const oldest = this.snapshotCache.keys().next().value;
+        if (oldest) this.snapshotCache.delete(oldest);
+      }
+      this.snapshotCache.set(cacheKey, snapshot);
+      this.store.setSnapshot(snapshot);
+      this.post({ type: 'GRAPH_UPDATE', payload: snapshot });
+      this.setupFileWatcher(workspaceRoot);
+    } catch (e) {
+      this.post({ type: 'ERROR', payload: { message: String(e), code: 'BUILD_ERROR' } });
+    }
+  }
+
+  private async runFullScan(workspaceRoot: string) {
+    this.currentFocusUri = undefined;
+    this.snapshotCache.clear();
     try {
       const snapshot = await buildGraphSnapshot(workspaceRoot, (stage, percent) => {
         this.post({ type: 'PROGRESS', payload: { stage, percent } });
@@ -120,9 +208,15 @@ export class WebviewPanelManager {
   private setupFileWatcher(workspaceRoot: string) {
     this.fileWatcher?.dispose();
     this.fileWatcher = createFileWatcher(workspaceRoot, async () => {
-      // Incremental rebuild on file change
-      await this.bootstrapGraph();
+      this.snapshotCache.clear();
+      if (this.currentFocusUri) {
+        await this.buildFocused(this.currentFocusUri);
+      }
     });
+  }
+
+  private isApexFile(uri: vscode.Uri): boolean {
+    return uri.fsPath.endsWith('.cls') || uri.fsPath.endsWith('.trigger');
   }
 
   private buildHtml(): string {
