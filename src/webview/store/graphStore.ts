@@ -60,6 +60,7 @@ interface GraphStore {
   viewState: ViewState;
   progress: Progress | null;
   referenceMap: ReferenceMap;
+  showMethodLevel: boolean;
   focusRootId: string | null;
   focusUpstreamIds: Set<string>;
   focusExpandedIds: Set<string>;
@@ -74,6 +75,7 @@ interface GraphStore {
   updateFilter: (patch: Partial<NodeFilter>) => void;
   updateNodePosition: (nodeId: string, pos: XYPosition) => void;
   setProgress: (progress: Progress) => void;
+  toggleMethodLevel: () => void;
   enterFocus: (rootId: string, baseNodeIds: Set<string>) => void;
   expandFocusDownstream: (nodeId: string) => void;
   collapseFocusDownstream: (nodeId: string) => void;
@@ -90,6 +92,7 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   viewState: defaultViewState,
   progress: null,
   referenceMap: new Map(),
+  showMethodLevel: false,
   focusRootId: null,
   focusUpstreamIds: new Set(),
   focusExpandedIds: new Set(),
@@ -186,6 +189,13 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   setProgress(progress) {
     set({ progress });
+  },
+
+  toggleMethodLevel() {
+    set((s) => ({
+      showMethodLevel: !s.showMethodLevel,
+      layoutState: {},
+    }));
   },
 
   enterFocus(rootId, baseNodeIds) {
