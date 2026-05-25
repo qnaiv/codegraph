@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseClassRefs, parseMethods, parseApexClassHeader, parseApexTriggerHeader } from '../apexParseUtils';
+import { parseClassRefs, parseMethods, parseApexClassHeader, parseApexTriggerHeader, parseInnerClasses, stripInnerClassBodies } from '../apexParseUtils';
 
 // -----------------------------------------------------------------------
 // parseClassRefs
@@ -417,5 +417,96 @@ describe('parseApexTriggerHeader', () => {
 
   it('returns null for non-trigger source', () => {
     expect(parseApexTriggerHeader('public class Foo {}')).toBeNull();
+  });
+});
+
+// -----------------------------------------------------------------------
+// parseInnerClasses
+// -----------------------------------------------------------------------
+
+describe('parseInnerClasses', () => {
+  const SRC_WITH_INNER = `
+    public class Outer {
+      public class Result {
+        public Boolean success;
+        public String message;
+        public Result(Boolean s, String m) { this.success = s; this.message = m; }
+      }
+      public class Filter {
+        public String status;
+        public Filter() {}
+      }
+      public enum Status { PENDING, DONE }
+      public void outerMethod() {}
+    }
+  `;
+
+  it('detects all inner classes', () => {
+    const inner = parseInnerClasses(SRC_WITH_INNER);
+    const names = inner.map((c) => c.name);
+    expect(names).toContain('Result');
+    expect(names).toContain('Filter');
+    expect(names).toContain('Status');
+  });
+
+  it('correctly classifies kinds', () => {
+    const inner = parseInnerClasses(SRC_WITH_INNER);
+    expect(inner.find((c) => c.name === 'Result')?.kind).toBe('apex-class');
+    expect(inner.find((c) => c.name === 'Status')?.kind).toBe('apex-enum');
+  });
+
+  it('parses methods within inner class', () => {
+    const inner = parseInnerClasses(SRC_WITH_INNER);
+    const result = inner.find((c) => c.name === 'Result');
+    const names = result?.methods.map((m) => m.name) ?? [];
+    expect(names).toContain('Result'); // constructor
+  });
+
+  it('returns empty array when no inner classes', () => {
+    const src = 'public class Simple { public void doIt() {} }';
+    expect(parseInnerClasses(src)).toHaveLength(0);
+  });
+
+  it('parses extends/implements on inner class', () => {
+    const src = `
+      public class Outer {
+        public class Child extends Base implements IFace {}
+      }
+    `;
+    const inner = parseInnerClasses(src);
+    expect(inner[0].extendsClass).toBe('Base');
+    expect(inner[0].implementsInterfaces).toContain('IFace');
+  });
+});
+
+// -----------------------------------------------------------------------
+// stripInnerClassBodies
+// -----------------------------------------------------------------------
+
+describe('stripInnerClassBodies', () => {
+  it('outer class method is still detected after stripping', () => {
+    const src = `
+      public class Outer {
+        public class Inner {
+          public void innerMethod() {}
+        }
+        public void outerMethod() {}
+      }
+    `;
+    const stripped = stripInnerClassBodies(src);
+    const methods = parseMethods(stripped).map((m) => m.name);
+    expect(methods).toContain('outerMethod');
+    expect(methods).not.toContain('innerMethod');
+  });
+
+  it('preserves source length (space padding)', () => {
+    const src = `public class Outer { public class Inner { public void m() {} } }`;
+    const stripped = stripInnerClassBodies(src);
+    expect(stripped.length).toBe(src.length);
+  });
+
+  it('no-op when no inner classes', () => {
+    const src = 'public class Simple { public void doIt() {} }';
+    expect(stripInnerClassBodies(src)).toBe(src);
   });
 });
