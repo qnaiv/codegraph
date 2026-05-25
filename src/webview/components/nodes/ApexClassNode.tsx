@@ -3,6 +3,23 @@ import { Handle, Position, NodeProps } from '@xyflow/react';
 import { ApexClassNode as ApexClassNodeData, ApexMethodNode } from '../../../shared/types';
 
 const MAX_METHOD_SCROLL_H = 280; // must match CodeGraphCanvas.tsx
+const CONTAINER_HEADER_H = 56;
+const METHOD_ITEM_H = 22;
+const METHOD_ITEM_DETAIL_H = 40;
+
+function methodHandleY(
+  methods: ApexMethodNode[],
+  index: number,
+  selectedMethodId: string | null,
+): number {
+  let y = CONTAINER_HEADER_H;
+  for (let i = 0; i < index; i++) {
+    y += methods[i].id === selectedMethodId ? METHOD_ITEM_DETAIL_H : METHOD_ITEM_H;
+  }
+  const rowH = methods[index].id === selectedMethodId ? METHOD_ITEM_DETAIL_H : METHOD_ITEM_H;
+  y += rowH / 2;
+  return Math.min(y, CONTAINER_HEADER_H + MAX_METHOD_SCROLL_H - 4);
+}
 
 interface ApexClassNodeProps extends NodeProps {
   data: {
@@ -82,6 +99,23 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
     return (
       <>
         <Handle type="target" position={Position.Left} style={{ background: borderColor, top: 28 }} />
+        {/* Per-method handles for method-focus edge routing */}
+        {selectedMethodId && visibleMethods.map((m, i) => (
+          <React.Fragment key={m.id}>
+            <Handle
+              type="target"
+              position={Position.Left}
+              id={m.id}
+              style={{ background: borderColor, top: methodHandleY(visibleMethods, i, selectedMethodId) }}
+            />
+            <Handle
+              type="source"
+              position={Position.Right}
+              id={m.id}
+              style={{ background: borderColor, top: methodHandleY(visibleMethods, i, selectedMethodId) }}
+            />
+          </React.Fragment>
+        ))}
         <div
           style={{
             width: '100%',

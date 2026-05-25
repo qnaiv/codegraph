@@ -134,6 +134,8 @@ function toRFEdge(gEdge: GraphEdge, isHighlighted: boolean, isAnySelected: boole
     id: gEdge.id,
     source: gEdge.sourceId,
     target: gEdge.targetId,
+    sourceHandle: gEdge.metadata?.sourceHandle,
+    targetHandle: gEdge.metadata?.targetHandle,
     type: 'codeGraph',
     animated: gEdge.kind === 'soql-references' || gEdge.kind.startsWith('dml-'),
     data: {
@@ -298,23 +300,35 @@ export function CodeGraphCanvas() {
 
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
 
-  // Method focus: class-level edges derived from method→method/sobject call edges.
-  // These replace the normal filteredEdges so connections are visible between class nodes.
+  // Method focus: class-level edges derived from method→method/sobject call edges,
+  // with per-method Handle IDs so edges connect at the exact method row position.
   const methodFocusClassEdges = useMemo((): GraphEdge[] => {
     if (!methodFocusInfo || !selectedMethodId) return [];
     const seen = new Set<string>();
     const result: GraphEdge[] = [];
     for (const e of gEdges) {
       if (e.sourceId !== selectedMethodId) continue;
-      const targetId = e.targetId.startsWith('method:')
+      const isMethodTarget = e.targetId.startsWith('method:');
+      const targetId = isMethodTarget
         ? classIdFromMethodId(e.targetId)
         : e.targetId.startsWith('sobject:') ? e.targetId : null;
       if (!targetId || targetId === methodFocusInfo.sourceClassId) continue;
       if (!filteredNodeIds.has(targetId)) continue;
-      const edgeId = `method-focus:${methodFocusInfo.sourceClassId}:${targetId}:${e.kind}`;
+      // Use callee method ID in edge key so multiple calls to same class get separate edges
+      const edgeKey = isMethodTarget ? e.targetId : `${targetId}:${e.kind}`;
+      const edgeId = `method-focus:${selectedMethodId}:${edgeKey}`;
       if (!seen.has(edgeId)) {
         seen.add(edgeId);
-        result.push({ id: edgeId, kind: e.kind, sourceId: methodFocusInfo.sourceClassId, targetId });
+        result.push({
+          id: edgeId,
+          kind: e.kind,
+          sourceId: methodFocusInfo.sourceClassId,
+          targetId,
+          metadata: {
+            sourceHandle: selectedMethodId,
+            targetHandle: isMethodTarget ? e.targetId : undefined,
+          },
+        });
       }
     }
     return result;

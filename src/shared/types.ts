@@ -205,6 +205,8 @@ export interface EdgeMetadata {
   soqlQuery?: SOQLQuery;
   dmlOp?: DMLOperation;
   relationshipName?: string;
+  sourceHandle?: string;
+  targetHandle?: string;
 }
 
 // ============================================================
