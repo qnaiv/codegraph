@@ -22,7 +22,7 @@ export interface NeighborResult {
 }
 import { extractSOQL, extractDML } from '../parser/SOQLExtractor';
 import { parseSObjectDirectory, parseSObjectMeta } from '../parser/SObjectMetaParser';
-import { parseApexDirectory, parseApexSource, ParsedApexClass, ParsedApexTrigger } from '../parser/ApexSourceParser';
+import { parseApexDirectory, parseApexSource, ParsedApexClass, ParsedApexTrigger, ParsedInnerClass } from '../parser/ApexSourceParser';
 import { extractMethodCalls } from '../parser/apexParseUtils';
 import { executeReferences } from '../lsp/LspClient';
 
@@ -161,6 +161,58 @@ function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymb
 }
 
 // -----------------------------------------------------------------------
+// ParsedInnerClass → ApexClassNode
+// -----------------------------------------------------------------------
+function buildInnerClassNode(
+  inner: ParsedInnerClass,
+  outerParsed: ParsedApexClass,
+  outerClassId: string,
+): ApexClassNode {
+  const innerClassId = `cls:${outerParsed.name}.${inner.name}`;
+  const allSOQL = extractSOQL(inner.source);
+  const allDML  = extractDML(inner.source);
+
+  const methods: ApexMethodNode[] = inner.methods.map((m) => {
+    const methodId = `method:${outerParsed.name}.${inner.name}.${m.name}`;
+    return {
+      id: methodId,
+      kind: m.name === inner.name ? 'apex-constructor' : 'apex-method',
+      label: m.name,
+      parentClassId: innerClassId,
+      uri: outerParsed.uri.toString(),
+      range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+      returnType: m.returnType,
+      parameters: [],
+      accessModifier: m.accessModifier,
+      isStatic: m.isStatic,
+      annotations: m.annotations,
+      soqlQueries: allSOQL,
+      dmlOperations: allDML,
+      docComment: m.docComment,
+    } as ApexMethodNode;
+  });
+
+  return {
+    id: innerClassId,
+    kind: inner.kind,
+    label: inner.name,
+    fullyQualifiedName: `${outerParsed.name}.${inner.name}`,
+    uri: outerParsed.uri.toString(),
+    range: { start: { line: 0, character: 0 }, end: { line: 0, character: 0 } },
+    namespace: undefined,
+    isAbstract: inner.isAbstract,
+    isVirtual:  inner.isVirtual,
+    accessModifier: inner.accessModifier,
+    annotations: inner.annotations,
+    methods,
+    innerClasses: [],
+    outerClassId,
+    isTestClass: false,
+    sharingMode: undefined,
+  };
+}
+
+// -----------------------------------------------------------------------
 // ParsedApexTrigger → ApexTriggerNode
 // -----------------------------------------------------------------------
 function buildTriggerNode(parsed: ParsedApexTrigger): ApexTriggerNode {
@@ -223,6 +275,33 @@ async function buildNodesAndEdges(
   for (const node of classNodes.values()) nodes.push(node);
   for (const parsed of parsedTriggers) nodes.push(buildTriggerNode(parsed));
 
+  // -----------------------------------------------------------------------
+  // インナークラスノード + inner-class エッジ
+  // -----------------------------------------------------------------------
+  for (const [, parsed] of parsedClasses) {
+    if (!parsed.innerClasses?.length) continue;
+    const outerNode = classNodes.get(parsed.name);
+    if (!outerNode) continue;
+
+    const innerClassIds: string[] = [];
+
+    for (const inner of parsed.innerClasses) {
+      const innerNode = buildInnerClassNode(inner, parsed, outerNode.id);
+      classNodes.set(`${parsed.name}.${inner.name}`, innerNode);
+      nodes.push(innerNode);
+      innerClassIds.push(innerNode.id);
+
+      edges.push({
+        id: `edge:inner-class:${outerNode.id}:${innerNode.id}`,
+        kind: 'inner-class',
+        sourceId: outerNode.id,
+        targetId: innerNode.id,
+      });
+    }
+
+    outerNode.innerClasses = innerClassIds;
+  }
+
   onProgress?.('継承・実装エッジを構築中…', basePercent + 25);
 
   // inherits / implements edges
@@ -247,6 +326,29 @@ async function buildNodesAndEdges(
           sourceId: classNode.id,
           targetId: `cls:${iface}`,
         });
+      }
+    }
+
+    // インナークラスの inherits / implements エッジ
+    for (const inner of parsed.innerClasses ?? []) {
+      const innerNodeId = `cls:${parsed.name}.${inner.name}`;
+      if (inner.extendsClass && classNodes.has(inner.extendsClass)) {
+        edges.push({
+          id: `edge:inherits:${innerNodeId}:cls:${inner.extendsClass}`,
+          kind: 'inherits',
+          sourceId: innerNodeId,
+          targetId: `cls:${inner.extendsClass}`,
+        });
+      }
+      for (const iface of inner.implementsInterfaces) {
+        if (classNodes.has(iface)) {
+          edges.push({
+            id: `edge:implements:${innerNodeId}:cls:${iface}`,
+            kind: 'implements',
+            sourceId: innerNodeId,
+            targetId: `cls:${iface}`,
+          });
+        }
       }
     }
   }
@@ -673,6 +775,7 @@ export async function buildSingleNodeSnapshot(
   onProgress?.('ノードを構築中…', 40);
 
   const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
   let nodeId: string;
 
   if ('targetSObject' in parsed) {
@@ -684,6 +787,21 @@ export async function buildSingleNodeSnapshot(
     const classNode = buildClassNode(parsed, lspSymbols);
     nodes.push(classNode);
     nodeId = classNode.id;
+
+    // インナークラスノードと inner-class エッジ
+    const innerClassIds: string[] = [];
+    for (const inner of parsed.innerClasses ?? []) {
+      const innerNode = buildInnerClassNode(inner, parsed, classNode.id);
+      nodes.push(innerNode);
+      innerClassIds.push(innerNode.id);
+      edges.push({
+        id: `edge:inner-class:${classNode.id}:${innerNode.id}`,
+        kind: 'inner-class',
+        sourceId: classNode.id,
+        targetId: innerNode.id,
+      });
+    }
+    classNode.innerClasses = innerClassIds;
   }
 
   onProgress?.('隣接ノード数を調査中…', 60);
@@ -717,7 +835,7 @@ export async function buildSingleNodeSnapshot(
     version: 1,
     projectRoot: path.basename(workspaceRoot),
     nodes,
-    edges: [],
+    edges,
     annotations: [],
     layoutState: {},
     viewState: defaultViewState,
@@ -805,12 +923,30 @@ export async function buildNeighborNodes(
 
   const newNodes: GraphNode[] = [];
   const newClassNodes = new Map<string, ApexClassNode>();
+  const pendingInnerEdges: GraphEdge[] = [];
+
   await Promise.all(
     [...parsedNewClasses.entries()].map(async ([, parsedClass]) => {
       const lspSymbols = await tryLspDocumentSymbol(parsedClass.uri);
       const classNode = buildClassNode(parsedClass, lspSymbols);
       newClassNodes.set(parsedClass.name, classNode);
       newNodes.push(classNode);
+
+      // インナークラスノードと inner-class エッジ
+      const innerClassIds: string[] = [];
+      for (const inner of parsedClass.innerClasses ?? []) {
+        const innerNode = buildInnerClassNode(inner, parsedClass, classNode.id);
+        newClassNodes.set(`${parsedClass.name}.${inner.name}`, innerNode);
+        newNodes.push(innerNode);
+        innerClassIds.push(innerNode.id);
+        pendingInnerEdges.push({
+          id: `edge:inner-class:${classNode.id}:${innerNode.id}`,
+          kind: 'inner-class',
+          sourceId: classNode.id,
+          targetId: innerNode.id,
+        });
+      }
+      classNode.innerClasses = innerClassIds;
     })
   );
   for (const parsedTrigger of parsedNewTriggers) {
@@ -833,6 +969,9 @@ export async function buildNeighborNodes(
   const addEdge = (edge: GraphEdge) => {
     if (!edgeSet.has(edge.id)) { edgeSet.add(edge.id); newEdges.push(edge); }
   };
+
+  // インナークラスエッジをマージ
+  for (const e of pendingInnerEdges) addEdge(e);
 
   // target → 新ノード（前進参照）
   for (const ref of parsed.referencedClasses) {

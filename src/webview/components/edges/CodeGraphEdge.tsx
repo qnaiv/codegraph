@@ -14,6 +14,7 @@ const EDGE_STYLES: Record<EdgeKind, { stroke: string; strokeDasharray?: string; 
   instantiates:      { stroke: '#44ccbb', strokeDasharray: '4 2', label: 'new' },
   'trigger-on':      { stroke: '#9d4a9d', label: 'trigger' },
   'annotation-attach': { stroke: '#555555', strokeDasharray: '2 4', label: '' },
+  'inner-class':       { stroke: '#556677', strokeDasharray: '3 5', label: '' },
 };
 
 export const CodeGraphEdgeComponent = memo(function CodeGraphEdgeComponent(props: EdgeProps) {

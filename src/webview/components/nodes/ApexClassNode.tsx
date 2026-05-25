@@ -266,6 +266,9 @@ export const ApexClassNodeComponent = memo(function ApexClassNodeComponent({
         </div>
 
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+          {node.outerClassId && (
+            <Badge color="#556677" text="⊂ inner" />
+          )}
           {node.methods.length > 0 && (
             <Badge color="#4a90d9" text={`${node.methods.length} methods`} />
           )}

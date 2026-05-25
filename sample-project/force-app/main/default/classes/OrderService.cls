@@ -5,6 +5,27 @@
  */
 public with sharing class OrderService extends BaseService {
 
+    /** 注文操作の結果を保持する DTO クラス */
+    public class OrderResult {
+        public Boolean success;
+        public Id orderId;
+        public String message;
+
+        public OrderResult(Boolean success, Id orderId, String message) {
+            this.success = success;
+            this.orderId = orderId;
+            this.message = message;
+        }
+    }
+
+    /** 注文ステータスの列挙型 */
+    public enum OrderStatus {
+        DRAFT,
+        CONFIRMED,
+        PROCESSING,
+        CANCELLED
+    }
+
     private AccountService accountService;
     private NotificationService notificationService;
 

@@ -18,6 +18,19 @@ export interface ParsedClassRef {
   kind: 'instantiates' | 'calls';
 }
 
+export interface ParsedInnerClass {
+  name: string;
+  kind: 'apex-class' | 'apex-interface' | 'apex-enum';
+  accessModifier: 'public' | 'private' | 'global' | 'protected';
+  isAbstract: boolean;
+  isVirtual: boolean;
+  extendsClass?: string;
+  implementsInterfaces: string[];
+  annotations: ApexAnnotation[];
+  methods: ParsedApexMethodInfo[];
+  source: string;
+}
+
 export interface ParsedClassHeader {
   name: string;
   kind: 'apex-class' | 'apex-interface' | 'apex-enum';
@@ -365,6 +378,141 @@ export function parseApexClassHeader(source: string): ParsedClassHeader | null {
       : [],
     annotations,
   };
+}
+
+// -----------------------------------------------------------------------
+// インナークラスのパース
+// -----------------------------------------------------------------------
+
+/** ソース内の openBraceIdx に対応する閉じブレースのインデックスを返す (-1 = 未発見) */
+function findMatchingBrace(source: string, openBraceIdx: number): number {
+  let depth = 1;
+  let i = openBraceIdx + 1;
+  while (i < source.length && depth > 0) {
+    if (source[i] === '{') depth++;
+    else if (source[i] === '}') depth--;
+    i++;
+  }
+  return depth === 0 ? i - 1 : -1;
+}
+
+/**
+ * アウタークラスのソース内でインナークラス宣言を解析して返す。
+ * メソッドのダブルカウントを防ぐため、この関数で取得した source を
+ * stripInnerClassBodies() に渡してからアウタークラスのメソッドを解析すること。
+ */
+export function parseInnerClasses(source: string): ParsedInnerClass[] {
+  const outerHeaderMatch = CLASS_HEADER_RE.exec(source);
+  if (!outerHeaderMatch) return [];
+
+  // アウタークラスの開きブレースを探す
+  let outerBraceIdx = -1;
+  for (let i = outerHeaderMatch.index + outerHeaderMatch[0].length; i < source.length; i++) {
+    if (source[i] === '{') { outerBraceIdx = i; break; }
+  }
+  if (outerBraceIdx === -1) return [];
+
+  const outerBodyEnd = findMatchingBrace(source, outerBraceIdx);
+  if (outerBodyEnd === -1) return [];
+
+  const outerBody = source.slice(outerBraceIdx + 1, outerBodyEnd);
+
+  const INNER_RE = new RegExp(CLASS_HEADER_RE.source, 'gi');
+  let m: RegExpExecArray | null;
+  const results: ParsedInnerClass[] = [];
+
+  while ((m = INNER_RE.exec(outerBody)) !== null) {
+    // インナークラスの開きブレースを探す
+    let innerBraceOffset = -1;
+    for (let i = m.index + m[0].length; i < outerBody.length; i++) {
+      if (outerBody[i] === '{') { innerBraceOffset = i; break; }
+      if (outerBody[i] === ';') break; // abstract/interface メソッド宣言
+    }
+    if (innerBraceOffset === -1) continue;
+
+    const innerBodyEnd = findMatchingBrace(outerBody, innerBraceOffset);
+    if (innerBodyEnd === -1) continue;
+
+    const innerBody = outerBody.slice(innerBraceOffset + 1, innerBodyEnd);
+    const headerArea = outerBody.slice(m.index, innerBraceOffset + 1);
+
+    const rawAccess = (m[1] ?? 'public').toLowerCase();
+    const accessModifier = (['public', 'private', 'global', 'protected'].includes(rawAccess)
+      ? rawAccess : 'public') as ParsedInnerClass['accessModifier'];
+
+    const kindRaw = m[4].toLowerCase();
+    const kind: 'apex-class' | 'apex-interface' | 'apex-enum' =
+      kindRaw === 'interface' ? 'apex-interface'
+      : kindRaw === 'enum'    ? 'apex-enum'
+      : 'apex-class';
+
+    const extendsMatch = EXTENDS_RE.exec(headerArea);
+    const implementsMatch = IMPLEMENTS_RE.exec(headerArea);
+
+    results.push({
+      name: m[5],
+      kind,
+      accessModifier,
+      isAbstract: /\babstract\b/i.test(m[2] ?? ''),
+      isVirtual:  /\bvirtual\b/i.test(m[2] ?? ''),
+      extendsClass: extendsMatch?.[1],
+      implementsInterfaces: implementsMatch
+        ? implementsMatch[1].split(',').map((s) => s.trim()).filter(Boolean)
+        : [],
+      annotations: parseAnnotations(outerBody, m.index),
+      methods: parseMethods(innerBody),
+      source: innerBody,
+    });
+
+    INNER_RE.lastIndex = innerBodyEnd + 1;
+  }
+
+  return results;
+}
+
+/**
+ * アウタークラスソース内のインナークラスボディ（`{...}`）をスペースで置換する。
+ * `parseMethods` / `parseClassRefs` をアウタークラス専用に絞り込むために使用。
+ */
+export function stripInnerClassBodies(source: string): string {
+  const outerHeaderMatch = CLASS_HEADER_RE.exec(source);
+  if (!outerHeaderMatch) return source;
+
+  let outerBraceIdx = -1;
+  for (let i = outerHeaderMatch.index + outerHeaderMatch[0].length; i < source.length; i++) {
+    if (source[i] === '{') { outerBraceIdx = i; break; }
+  }
+  if (outerBraceIdx === -1) return source;
+
+  const outerBodyEnd = findMatchingBrace(source, outerBraceIdx);
+  if (outerBodyEnd === -1) return source;
+
+  const outerBody = source.slice(outerBraceIdx + 1, outerBodyEnd);
+  const INNER_RE = new RegExp(CLASS_HEADER_RE.source, 'gi');
+  let m: RegExpExecArray | null;
+
+  const chars = source.split('');
+
+  while ((m = INNER_RE.exec(outerBody)) !== null) {
+    let innerBraceOffset = -1;
+    for (let i = m.index + m[0].length; i < outerBody.length; i++) {
+      if (outerBody[i] === '{') { innerBraceOffset = i; break; }
+      if (outerBody[i] === ';') break;
+    }
+    if (innerBraceOffset === -1) continue;
+
+    const innerBodyEnd = findMatchingBrace(outerBody, innerBraceOffset);
+    if (innerBodyEnd === -1) continue;
+
+    // 絶対インデックスに変換してスペース埋め
+    const absStart = outerBraceIdx + 1 + innerBraceOffset;
+    const absEnd   = outerBraceIdx + 1 + innerBodyEnd;
+    for (let k = absStart; k <= absEnd; k++) chars[k] = ' ';
+
+    INNER_RE.lastIndex = innerBodyEnd + 1;
+  }
+
+  return chars.join('');
 }
 
 export function parseApexTriggerHeader(source: string): ParsedTriggerHeader | null {

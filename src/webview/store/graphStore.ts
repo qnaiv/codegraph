@@ -17,6 +17,7 @@ const defaultFilter: NodeFilter = {
   hideManagedPackages: true,
   sobjectTypes: 'referenced-only',
   minConnectionCount: 0,
+  hideInnerClasses: false,
 };
 
 const defaultViewState: ViewState = {

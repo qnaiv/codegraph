@@ -43,7 +43,8 @@ export type EdgeKind =
   | 'field-lookup'
   | 'instantiates'
   | 'trigger-on'
-  | 'annotation-attach';
+  | 'annotation-attach'
+  | 'inner-class';
 
 export type GranularityLevel = 'class' | 'method' | 'soql';
 
@@ -65,6 +66,7 @@ export interface ApexClassNode {
   annotations: ApexAnnotation[];
   methods: ApexMethodNode[];
   innerClasses: string[];
+  outerClassId?: string;
   isTestClass: boolean;
   sharingMode?: 'with sharing' | 'without sharing' | 'inherited sharing';
 }
@@ -266,6 +268,7 @@ export interface NodeFilter {
   hideManagedPackages: boolean;
   sobjectTypes: 'all' | 'custom-only' | 'referenced-only';
   minConnectionCount: number;
+  hideInnerClasses?: boolean;
 }
 
 // ============================================================
