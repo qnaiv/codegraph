@@ -162,7 +162,6 @@ export function CodeGraphCanvas() {
     searchQuery,
     activeFocusLabel,
     scanDepth,
-    isPinned,
     enterFocus,
     expandFocusDownstream,
     collapseFocusDownstream,
@@ -170,7 +169,6 @@ export function CodeGraphCanvas() {
     exitFocus,
     setSearchQuery,
     setScanDepth,
-    setIsPinned,
   } = useGraphStore();
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
@@ -473,24 +471,6 @@ export function CodeGraphCanvas() {
             </button>
           ))}
         </div>
-
-        {/* 固定トグル */}
-        <button
-          onClick={() => {
-            const next = !isPinned;
-            setIsPinned(next);
-            postMessage({ type: 'PIN_FOCUS', payload: { pinned: next } });
-          }}
-          title={isPinned ? 'エディタ切り替えに追従しない（クリックで追従に戻す）' : 'エディタ切り替えに追従中（クリックで固定）'}
-          style={{
-            background: isPinned ? '#2a1a3a' : '#1e1e2e',
-            color: isPinned ? '#cc88ff' : '#666',
-            border: `1px solid ${isPinned ? '#7a44bb' : '#333'}`,
-            borderRadius: 4, padding: '3px 9px', fontSize: 11, cursor: 'pointer',
-          }}
-        >
-          {isPinned ? '📌 固定中' : '📍 追従中'}
-        </button>
 
         {/* フィルタートグル */}
         <FilterToggle

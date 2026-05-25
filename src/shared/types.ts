@@ -318,5 +318,4 @@ export type WebviewToExtensionMessage =
   | { type: 'DELETE_ANNOTATION'; payload: { annotationId: string } }
   | { type: 'SAVE_LAYOUT'; payload: { positions: Record<string, XYPosition> } }
   | { type: 'REFRESH_GRAPH' }
-  | { type: 'SET_SCAN_DEPTH'; payload: { depth: 1 | 2 | 3 } }
-  | { type: 'PIN_FOCUS'; payload: { pinned: boolean } };
+  | { type: 'SET_SCAN_DEPTH'; payload: { depth: 1 | 2 | 3 } };

@@ -24,9 +24,6 @@ export class WebviewPanelManager {
   private readonly context: vscode.ExtensionContext;
   private readonly store = new GraphStore();
   private fileWatcher: vscode.Disposable | undefined;
-  private editorListener: vscode.Disposable | undefined;
-
-  private pinned = false;
   private scanDepth: 1 | 2 | 3 = 2;
   private currentFocusUri: vscode.Uri | undefined;
 
@@ -64,15 +61,6 @@ export class WebviewPanelManager {
     this.panel.onDidDispose(() => {
       this.panel = undefined;
       this.fileWatcher?.dispose();
-      this.editorListener?.dispose();
-    });
-
-    // エディタ切り替えを監視してフォーカスドスキャンを再実行
-    this.editorListener = vscode.window.onDidChangeActiveTextEditor(async (editor: vscode.TextEditor | undefined) => {
-      if (this.pinned || !this.panel) return;
-      if (!editor || !this.isApexFile(editor.document.uri)) return;
-      if (editor.document.uri.toString() === this.currentFocusUri?.toString()) return;
-      await this.buildFocused(editor.document.uri);
     });
   }
 
@@ -82,7 +70,6 @@ export class WebviewPanelManager {
 
   dispose() {
     this.fileWatcher?.dispose();
-    this.editorListener?.dispose();
     this.panel?.dispose();
   }
 
@@ -95,10 +82,6 @@ export class WebviewPanelManager {
       case 'SET_SCAN_DEPTH':
         this.scanDepth = msg.payload.depth;
         if (this.currentFocusUri) await this.buildFocused(this.currentFocusUri);
-        break;
-
-      case 'PIN_FOCUS':
-        this.pinned = msg.payload.pinned;
         break;
 
       case 'GET_REFERENCES': {

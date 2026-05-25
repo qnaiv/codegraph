@@ -69,7 +69,6 @@ interface GraphStore {
   // オンデマンドスキャン状態
   activeFocusLabel: string;
   scanDepth: 1 | 2 | 3;
-  isPinned: boolean;
 
   setSnapshot: (snapshot: GraphSnapshot) => void;
   setGranularity: (level: GranularityLevel) => void;
@@ -87,7 +86,6 @@ interface GraphStore {
   setSearchQuery: (q: string) => void;
   setActiveFocusLabel: (label: string) => void;
   setScanDepth: (d: 1 | 2 | 3) => void;
-  setIsPinned: (pinned: boolean) => void;
 }
 
 export const useGraphStore = create<GraphStore>((set, get) => ({
@@ -105,7 +103,6 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   searchQuery: '',
   activeFocusLabel: '',
   scanDepth: 2,
-  isPinned: false,
 
   setSnapshot(snapshot) {
     set({
@@ -261,9 +258,5 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   setScanDepth(d) {
     set({ scanDepth: d });
-  },
-
-  setIsPinned(pinned) {
-    set({ isPinned: pinned });
   },
 }));
