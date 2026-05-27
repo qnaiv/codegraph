@@ -1014,10 +1014,56 @@ export async function buildNeighborNodes(
     addEdge({ id: `edge:calls:cls:${callerClass}:${targetNodeId}`, kind: 'calls', sourceId: `cls:${callerClass}`, targetId: targetNodeId });
   }
 
+  // SObject ノードと method → SObject エッジを生成
+  // （buildSingleNodeSnapshot では SObject ノードが作成されないため、展開時に補完する）
+  const addedSObjectNames = new Set<string>();
+
+  function ensureSObjectNode(objName: string) {
+    if (addedSObjectNames.has(objName)) return;
+    addedSObjectNames.add(objName);
+    const isCustom = objName.endsWith('__c') || objName.endsWith('__mdt');
+    newNodes.push({
+      id: `sobject:${objName}`,
+      kind: 'sobject',
+      label: objName,
+      isCustom,
+      isCustomMetadata: objName.endsWith('__mdt'),
+      fields: [],
+      recordTypes: [],
+    } as SObjectNode);
+  }
+
+  function addSObjectEdgesForMethods(methods: ApexMethodNode[]) {
+    for (const method of methods) {
+      for (const q of method.soqlQueries) {
+        ensureSObjectNode(q.fromObject);
+        addEdge({ id: `edge:soql:${method.id}:sobject:${q.fromObject}`, kind: 'soql-references', sourceId: method.id, targetId: `sobject:${q.fromObject}` });
+        for (const extra of q.additionalObjects) {
+          ensureSObjectNode(extra);
+          addEdge({ id: `edge:soql:${method.id}:sobject:${extra}`, kind: 'soql-references', sourceId: method.id, targetId: `sobject:${extra}` });
+        }
+      }
+      for (const dml of method.dmlOperations) {
+        ensureSObjectNode(dml.targetType);
+        const kind: GraphEdge['kind'] = dml.type === 'insert' || dml.type === 'upsert' ? 'dml-insert'
+          : dml.type === 'delete' || dml.type === 'undelete' ? 'dml-delete'
+          : 'dml-update';
+        addEdge({ id: `edge:dml:${method.id}:sobject:${dml.targetType}:${kind}`, kind, sourceId: method.id, targetId: `sobject:${dml.targetType}` });
+      }
+    }
+  }
+
+  // 新ノード の SObject エッジ
+  for (const [, classNode] of newClassNodes) {
+    addSObjectEdgesForMethods(classNode.methods);
+  }
+
   // メソッドレベルエッジ：target のメソッドが新ノードのメソッドを呼び出すエッジを生成
   if (newClassNodes.size > 0) {
     const targetLspSymbols = await tryLspDocumentSymbol(targetUri);
     const targetClassNode = buildClassNode(parsed, targetLspSymbols);
+    // target クラスの SObject エッジも補完する
+    addSObjectEdgesForMethods(targetClassNode.methods.filter(m => m.accessModifier !== 'private'));
     const targetVisibleMethods = targetClassNode.methods.filter(m => m.accessModifier !== 'private');
     const methodByBaseName = new Map<string, ApexMethodNode>();
     for (const m of targetVisibleMethods) {

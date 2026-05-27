@@ -253,25 +253,36 @@ export function CodeGraphCanvas() {
   const methodFocusInfo = useMemo(() => {
     if (!selectedMethodId) return null;
     const sourceClassId = classIdFromMethodId(selectedMethodId);
+
+    // BFS: traverse the full transitive method call graph
+    const visitedMethods = new Set<string>([selectedMethodId]);
+    const queue: string[] = [selectedMethodId];
     const calleeClassIds = new Set<string>([sourceClassId]);
     const calleeMethodIds = new Set<string>();
 
-    // Precise: collect method-level callee info
-    for (const e of gEdges) {
-      if (e.sourceId !== selectedMethodId) continue;
-      if (e.targetId.startsWith('method:')) {
-        const targetClassId = classIdFromMethodId(e.targetId);
-        if (targetClassId !== sourceClassId) {
-          calleeClassIds.add(targetClassId);
-          calleeMethodIds.add(e.targetId);
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const curClassId = classIdFromMethodId(cur);
+      for (const e of gEdges) {
+        if (e.sourceId !== cur) continue;
+        if (e.targetId.startsWith('method:')) {
+          const tClassId = classIdFromMethodId(e.targetId);
+          if (tClassId !== curClassId) {
+            calleeClassIds.add(tClassId);
+            calleeMethodIds.add(e.targetId);
+          }
+          if (!visitedMethods.has(e.targetId)) {
+            visitedMethods.add(e.targetId);
+            queue.push(e.targetId);
+          }
         }
-      }
-      if (e.targetId.startsWith('sobject:')) {
-        calleeClassIds.add(e.targetId);
+        if (e.targetId.startsWith('sobject:')) {
+          calleeClassIds.add(e.targetId);
+        }
       }
     }
 
-    return { sourceClassId, calleeClassIds, calleeMethodIds };
+    return { sourceClassId, calleeClassIds, calleeMethodIds, visitedMethods };
   }, [selectedMethodId, gEdges]);
 
   // Focus visible set (class focus mode)
@@ -310,31 +321,38 @@ export function CodeGraphCanvas() {
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
 
   // Method focus: class-level edges derived from method→method/sobject call edges,
-  // with per-method Handle IDs so edges connect at the exact method row position.
+  // covering ALL visited methods in the transitive call chain.
   const methodFocusClassEdges = useMemo((): GraphEdge[] => {
     if (!methodFocusInfo || !selectedMethodId) return [];
     const seen = new Set<string>();
     const result: GraphEdge[] = [];
-    // Precise: method-level edges with per-Handle routing
+
     for (const e of gEdges) {
-      if (e.sourceId !== selectedMethodId) continue;
+      // Include edges from any method in the transitive call chain
+      if (!methodFocusInfo.visitedMethods.has(e.sourceId)) continue;
       const isMethodTarget = e.targetId.startsWith('method:');
+      const isSObjectTarget = e.targetId.startsWith('sobject:');
       const targetId = isMethodTarget
         ? classIdFromMethodId(e.targetId)
-        : e.targetId.startsWith('sobject:') ? e.targetId : null;
-      if (!targetId || targetId === methodFocusInfo.sourceClassId) continue;
+        : isSObjectTarget ? e.targetId : null;
+      if (!targetId) continue;
       if (!filteredNodeIds.has(targetId)) continue;
-      const edgeKey = isMethodTarget ? e.targetId : `${targetId}:${e.kind}`;
-      const edgeId = `method-focus:${selectedMethodId}:${edgeKey}`;
+      const sourceClassId = classIdFromMethodId(e.sourceId);
+      // Skip intra-class edges
+      if (!isSObjectTarget && targetId === sourceClassId) continue;
+      const edgeKey = isMethodTarget
+        ? `${e.sourceId}:${e.targetId}`
+        : `${e.sourceId}:${targetId}:${e.kind}`;
+      const edgeId = `method-focus:${edgeKey}`;
       if (!seen.has(edgeId)) {
         seen.add(edgeId);
         result.push({
           id: edgeId,
           kind: e.kind,
-          sourceId: methodFocusInfo.sourceClassId,
+          sourceId: sourceClassId,
           targetId,
           metadata: {
-            sourceHandle: selectedMethodId,
+            sourceHandle: e.sourceId,
             targetHandle: isMethodTarget ? e.targetId : undefined,
           },
         });
@@ -347,10 +365,10 @@ export function CodeGraphCanvas() {
   // Classes expanded to method level
   const expandedClassIds = useMemo(() => {
     if (methodFocusInfo) {
-      // Method focus: expand all shown classes
+      // Method focus: expand ALL apex class nodes in the chain (excluding inner classes)
       const ids = new Set<string>();
       for (const n of filteredNodes) {
-        if (isApexClass(n)) ids.add(n.id);
+        if (isApexClass(n) && !(n as ApexClassNode).outerClassId) ids.add(n.id);
       }
       return ids;
     }
@@ -481,22 +499,28 @@ export function CodeGraphCanvas() {
     postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: gNode.uri, alreadyIncludedUris } });
   }, [gNodes, setPendingExpansion]);
 
-  // Auto-expand source class neighbors when a method is focused and +N nodes are unloaded
+  // Auto-expand source class and all callee classes one hop at a time (chain reaction)
   React.useEffect(() => {
-    if (!selectedMethodId) return;
-    const sourceClassId = classIdFromMethodId(selectedMethodId);
+    if (!selectedMethodId || !methodFocusInfo) return;
     const { neighborCounts: counts, nodes: currentNodes, pendingExpansionNodeId: pending } = useGraphStore.getState();
     if (pending) return;
-    const count = counts[sourceClassId] ?? 0;
-    if (count <= 0) return;
-    const gNode = currentNodes.find((n) => n.id === sourceClassId);
-    if (!gNode || !hasLocation(gNode)) return;
-    const alreadyIncludedUris = currentNodes
-      .filter((n) => hasLocation(n))
-      .map((n) => (n as { uri: string }).uri);
-    useGraphStore.getState().setPendingExpansion(sourceClassId);
-    postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: (gNode as { uri: string }).uri, alreadyIncludedUris } });
-  }, [selectedMethodId]); // fire only when the focused method changes
+
+    // Expand the source class first, then any callee class with unloaded neighbors
+    const candidates = [methodFocusInfo.sourceClassId, ...methodFocusInfo.calleeClassIds];
+    for (const classId of candidates) {
+      if (classId.startsWith('sobject:')) continue;
+      const count = counts[classId] ?? 0;
+      if (count <= 0) continue;
+      const gNode = currentNodes.find((n) => n.id === classId);
+      if (!gNode || !hasLocation(gNode)) continue;
+      const alreadyIncludedUris = currentNodes
+        .filter((n) => hasLocation(n))
+        .map((n) => (n as { uri: string }).uri);
+      useGraphStore.getState().setPendingExpansion(classId);
+      postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: (gNode as { uri: string }).uri, alreadyIncludedUris } });
+      return; // one expansion at a time; re-fires after mergeExpansion updates gEdges
+    }
+  }, [selectedMethodId, methodFocusInfo]); // re-fires after each expansion via methodFocusInfo change
 
   // Method click callback
   const handleMethodClick = useCallback((methodId: string) => {
