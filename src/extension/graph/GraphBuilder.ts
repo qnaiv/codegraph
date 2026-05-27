@@ -54,6 +54,25 @@ async function tryLspDocumentSymbol(uri: vscode.Uri): Promise<vscode.DocumentSym
   }
 }
 
+/**
+ * LSP が起動中の場合に備えてリトライするラッパー。
+ * 最大 retries 回、各 delayMs ミリ秒待ってから再試行する。
+ */
+async function tryLspDocumentSymbolWithRetry(
+  uri: vscode.Uri,
+  retries = 4,
+  delayMs = 3000
+): Promise<vscode.DocumentSymbol[] | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      await new Promise<void>((r) => setTimeout(r, delayMs));
+    }
+    const result = await tryLspDocumentSymbol(uri);
+    if (result !== null) return result;
+  }
+  return null;
+}
+
 function rangeToLSP(r: vscode.Range) {
   return {
     start: { line: r.start.line, character: r.start.character },
@@ -275,7 +294,7 @@ async function buildNodesAndEdges(
   const classEntries = [...parsedClasses.entries()];
   await Promise.all(
     classEntries.map(async ([, parsed], i) => {
-      const lspSymbols = await tryLspDocumentSymbol(parsed.uri);
+      const lspSymbols = await tryLspDocumentSymbolWithRetry(parsed.uri);
       if (!lspSymbols) throw new LspNotConnectedError();
       const classNode = buildClassNode(parsed, lspSymbols);
       classNodes.set(parsed.name, classNode);
@@ -796,7 +815,8 @@ export async function buildSingleNodeSnapshot(
     nodes.push(triggerNode);
     nodeId = triggerNode.id;
   } else {
-    const lspSymbols = await tryLspDocumentSymbol(rootUri);
+    onProgress?.('Apex Language Server を待機中…', 20);
+    const lspSymbols = await tryLspDocumentSymbolWithRetry(rootUri);
     if (!lspSymbols) {
       throw new LspNotConnectedError();
     }
@@ -943,7 +963,7 @@ export async function buildNeighborNodes(
 
   await Promise.all(
     [...parsedNewClasses.entries()].map(async ([, parsedClass]) => {
-      const lspSymbols = await tryLspDocumentSymbol(parsedClass.uri);
+      const lspSymbols = await tryLspDocumentSymbolWithRetry(parsedClass.uri);
       if (!lspSymbols) throw new LspNotConnectedError();
       const classNode = buildClassNode(parsedClass, lspSymbols);
       newClassNodes.set(parsedClass.name, classNode);
@@ -1080,7 +1100,7 @@ export async function buildNeighborNodes(
 
   // メソッドレベルエッジ：target のメソッドが新ノードのメソッドを呼び出すエッジを生成
   if (newClassNodes.size > 0) {
-    const targetLspSymbols = await tryLspDocumentSymbol(targetUri);
+    const targetLspSymbols = await tryLspDocumentSymbolWithRetry(targetUri);
     if (!targetLspSymbols) throw new LspNotConnectedError();
     const targetClassNode = buildClassNode(parsed, targetLspSymbols);
     // target クラスの SObject エッジも補完する
