@@ -1019,6 +1019,8 @@ export async function buildNeighborNodes(
   const addedSObjectNames = new Set<string>();
 
   function ensureSObjectNode(objName: string) {
+    // Only create nodes for SObject type names (uppercase start), not unresolved variable names
+    if (!/^[A-Z]/.test(objName)) return;
     if (addedSObjectNames.has(objName)) return;
     addedSObjectNames.add(objName);
     const isCustom = objName.endsWith('__c') || objName.endsWith('__mdt');
@@ -1037,13 +1039,14 @@ export async function buildNeighborNodes(
     for (const method of methods) {
       for (const q of method.soqlQueries) {
         ensureSObjectNode(q.fromObject);
-        addEdge({ id: `edge:soql:${method.id}:sobject:${q.fromObject}`, kind: 'soql-references', sourceId: method.id, targetId: `sobject:${q.fromObject}` });
+        if (/^[A-Z]/.test(q.fromObject)) addEdge({ id: `edge:soql:${method.id}:sobject:${q.fromObject}`, kind: 'soql-references', sourceId: method.id, targetId: `sobject:${q.fromObject}` });
         for (const extra of q.additionalObjects) {
           ensureSObjectNode(extra);
-          addEdge({ id: `edge:soql:${method.id}:sobject:${extra}`, kind: 'soql-references', sourceId: method.id, targetId: `sobject:${extra}` });
+          if (/^[A-Z]/.test(extra)) addEdge({ id: `edge:soql:${method.id}:sobject:${extra}`, kind: 'soql-references', sourceId: method.id, targetId: `sobject:${extra}` });
         }
       }
       for (const dml of method.dmlOperations) {
+        if (!/^[A-Z]/.test(dml.targetType)) continue; // skip unresolved variable names
         ensureSObjectNode(dml.targetType);
         const kind: GraphEdge['kind'] = dml.type === 'insert' || dml.type === 'upsert' ? 'dml-insert'
           : dml.type === 'delete' || dml.type === 'undelete' ? 'dml-delete'
