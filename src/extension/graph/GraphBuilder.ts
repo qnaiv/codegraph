@@ -23,7 +23,7 @@ export interface NeighborResult {
 import { extractSOQL, extractDML } from '../parser/SOQLExtractor';
 import { parseSObjectDirectory, parseSObjectMeta } from '../parser/SObjectMetaParser';
 import { parseApexDirectory, parseApexSource, ParsedApexClass, ParsedApexTrigger, ParsedInnerClass } from '../parser/ApexSourceParser';
-import { extractMethodCalls } from '../parser/apexParseUtils';
+import { extractMethodCalls, extractMethodBodies } from '../parser/apexParseUtils';
 import { executeReferences } from '../lsp/LspClient';
 
 // -----------------------------------------------------------------------
@@ -122,10 +122,29 @@ function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymb
       first.dmlOperations = [...first.dmlOperations, ...allDML.filter(d => !matchedDML.has(d))];
     }
   } else {
-    if (methods.length > 0) {
-      const firstNonConstructor = methods.find((m) => m.kind === 'apex-method') ?? methods[0];
-      firstNonConstructor.soqlQueries   = allSOQL;
-      firstNonConstructor.dmlOperations = allDML;
+    // LSP range なし: メソッドボディを正規表現で特定してメソッドごとに SOQL/DML を割り当て
+    const bodyMap = extractMethodBodies(parsed.source);
+    const assignedSOQL = new Set<string>();
+    const assignedDML  = new Set<string>();
+    for (const method of methods) {
+      const baseName = method.label.split('(')[0].trim();
+      const body = bodyMap.get(baseName);
+      if (body) {
+        method.soqlQueries   = extractSOQL(body);
+        method.dmlOperations = extractDML(body);
+        method.soqlQueries.forEach(q => assignedSOQL.add(q.raw));
+        method.dmlOperations.forEach(d => assignedDML.add(`${d.type}:${d.targetType}`));
+      }
+    }
+    // クラスレベル（メソッド外）の SOQL/DML を最初のメソッドに付与
+    const unmatched_soql = allSOQL.filter(q => !assignedSOQL.has(q.raw));
+    const unmatched_dml  = allDML.filter(d => !assignedDML.has(`${d.type}:${d.targetType}`));
+    if (unmatched_soql.length > 0 || unmatched_dml.length > 0) {
+      const first = methods.find(m => m.kind === 'apex-method') ?? methods[0];
+      if (first) {
+        first.soqlQueries   = [...first.soqlQueries,   ...unmatched_soql];
+        first.dmlOperations = [...first.dmlOperations, ...unmatched_dml];
+      }
     }
   }
 

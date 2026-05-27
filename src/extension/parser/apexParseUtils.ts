@@ -525,3 +525,38 @@ export function parseApexTriggerHeader(source: string): ParsedTriggerHeader | nu
     .map((e) => EVENT_MAP[e]);
   return { name: m[1], targetSObject: m[2], events };
 }
+
+/**
+ * LSP range が使えない場合（LSP 未接続環境）のフォールバック:
+ * METHOD_RE でメソッドボディ境界を正規表現で特定し、
+ * 各メソッドボディ内の SOQL/DML 位置情報を返す。
+ *
+ * 返却: メソッド名 → ボディ文字列の開始インデックス
+ * （呼び出し側で extractSOQL / extractDML に渡す）
+ */
+export function extractMethodBodies(source: string): Map<string, string> {
+  const bodies = new Map<string, string>();
+  const re = new RegExp(METHOD_RE.source, 'gm');
+  const seen = new Set<string>();
+  let m: RegExpExecArray | null;
+
+  while ((m = re.exec(source)) !== null) {
+    const name = m[4];
+    if (/^(class|interface|enum|trigger|if|for|while|catch|return|new|this|super)$/i.test(name)) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    if (m[0].trimEnd().endsWith(';')) continue; // abstract / interface
+
+    const bodyStart = m.index + m[0].length;
+    let depth = 1;
+    let i = bodyStart;
+    while (i < source.length && depth > 0) {
+      if (source[i] === '{') depth++;
+      else if (source[i] === '}') depth--;
+      i++;
+    }
+    bodies.set(name, source.slice(bodyStart, i - 1));
+  }
+
+  return bodies;
+}
