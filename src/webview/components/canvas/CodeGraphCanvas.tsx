@@ -166,6 +166,62 @@ function ProgressOverlay({ stage, percent }: { stage: string; percent: number })
 }
 
 // -----------------------------------------------------------------------
+// LSP error overlay
+// -----------------------------------------------------------------------
+function LspErrorOverlay({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 20,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(10,10,20,0.95)', color: '#cce4f7',
+      padding: 32,
+    }}>
+      <div style={{ fontSize: 20, marginBottom: 16 }}>⚠️ Apex Language Server 未接続</div>
+      <div style={{ fontSize: 13, textAlign: 'center', maxWidth: 480, lineHeight: 1.7, color: '#aac0d8' }}>
+        <p style={{ margin: '0 0 12px' }}>
+          CodeGraph は Apex Language Server（LSP）が必要です。<br />
+          LSP が接続されていないため、グラフを構築できません。
+        </p>
+        <p style={{ margin: '0 0 12px', fontWeight: 'bold', color: '#cce4f7' }}>接続する方法：</p>
+        <ol style={{ textAlign: 'left', margin: '0 0 16px', paddingLeft: 24 }}>
+          <li style={{ marginBottom: 8 }}>
+            VS Code の Extensions（拡張機能）パネルを開く
+          </li>
+          <li style={{ marginBottom: 8 }}>
+            <strong>Salesforce Extension Pack</strong> を検索してインストール
+          </li>
+          <li style={{ marginBottom: 8 }}>
+            VS Code を再起動し、Apex ファイル（<code>.cls</code>）を開く
+          </li>
+          <li style={{ marginBottom: 8 }}>
+            ステータスバーの下部に <em>"Apex Language Server Started"</em> と表示されるまで待つ
+          </li>
+          <li>
+            CodeGraph パネルを開き直す（または Apex ファイルを開いた状態でリロード）
+          </li>
+        </ol>
+        <a
+          href="https://marketplace.visualstudio.com/items?itemName=salesforce.salesforcedx-vscode"
+          style={{ color: '#4a90d9', fontSize: 12 }}
+        >
+          Salesforce Extension Pack — VS Code Marketplace
+        </a>
+      </div>
+      <button
+        onClick={onDismiss}
+        style={{
+          marginTop: 24, background: '#1a3a5a', color: '#cce4f7',
+          border: '1px solid #4a90d9', borderRadius: 4,
+          padding: '6px 20px', fontSize: 12, cursor: 'pointer',
+        }}
+      >
+        閉じる
+      </button>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------
 // Toggle button
 // -----------------------------------------------------------------------
 function FilterToggle({ label, active, onToggle }: { label: string; active: boolean; onToggle: (v: boolean) => void }) {
@@ -216,6 +272,8 @@ export function CodeGraphCanvas() {
     setSearchQuery,
     setFollowMode,
     setPendingExpansion,
+    errorCode,
+    clearError,
   } = useGraphStore();
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
@@ -638,6 +696,7 @@ export function CodeGraphCanvas() {
   return (
     <div style={{ width: '100%', height: '100vh', position: 'relative', background: '#0a0c14' }}>
       {progress && <ProgressOverlay stage={progress.stage} percent={progress.percent} />}
+      {errorCode === 'LSP_NOT_CONNECTED' && <LspErrorOverlay onDismiss={clearError} />}
 
       <ReactFlow
         nodes={nodes}

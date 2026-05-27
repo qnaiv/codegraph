@@ -75,6 +75,10 @@ interface GraphStore {
   neighborCounts: Record<string, number>;
   pendingExpansionNodeId: string | null;
 
+  // エラー状態
+  errorCode: string | null;
+  errorMessage: string | null;
+
   setSnapshot: (snapshot: GraphSnapshot) => void;
   setGranularity: (level: GranularityLevel) => void;
   setSelectedNodes: (ids: string[]) => void;
@@ -97,6 +101,8 @@ interface GraphStore {
   setFollowMode: (enabled: boolean) => void;
   mergeExpansion: (newNodes: GraphNode[], newEdges: GraphEdge[], newCounts: Record<string, number>, expandedNodeId: string, cappedCount: number) => void;
   setPendingExpansion: (nodeId: string | null) => void;
+  setError: (code: string, message: string) => void;
+  clearError: () => void;
 }
 
 export const useGraphStore = create<GraphStore>((set, get) => ({
@@ -118,6 +124,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
   followMode: false,
   neighborCounts: {},
   pendingExpansionNodeId: null,
+  errorCode: null,
+  errorMessage: null,
 
   setSnapshot(snapshot) {
     set({
@@ -137,6 +145,8 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
       searchQuery: '',
       neighborCounts: snapshot.neighborCounts ?? {},
       pendingExpansionNodeId: null,
+      errorCode: null,
+      errorMessage: null,
     });
   },
 
@@ -337,5 +347,13 @@ export const useGraphStore = create<GraphStore>((set, get) => ({
 
   setPendingExpansion(nodeId) {
     set({ pendingExpansionNodeId: nodeId });
+  },
+
+  setError(code, message) {
+    set({ errorCode: code, errorMessage: message });
+  },
+
+  clearError() {
+    set({ errorCode: null, errorMessage: null });
   },
 }));

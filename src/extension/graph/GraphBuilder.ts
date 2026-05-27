@@ -23,21 +23,34 @@ export interface NeighborResult {
 import { extractSOQL, extractDML } from '../parser/SOQLExtractor';
 import { parseSObjectDirectory, parseSObjectMeta } from '../parser/SObjectMetaParser';
 import { parseApexDirectory, parseApexSource, ParsedApexClass, ParsedApexTrigger, ParsedInnerClass } from '../parser/ApexSourceParser';
-import { extractMethodCalls, extractMethodBodies } from '../parser/apexParseUtils';
+import { extractMethodCalls } from '../parser/apexParseUtils';
 import { executeReferences } from '../lsp/LspClient';
 
 // -----------------------------------------------------------------------
-// LSP を使って documentSymbol を補完 (任意・失敗しても続行)
+// LSP (Apex Language Server) から documentSymbol を取得する。
+// 未接続の場合は null を返す。
 // -----------------------------------------------------------------------
-async function tryLspDocumentSymbol(uri: vscode.Uri): Promise<vscode.DocumentSymbol[]> {
+export class LspNotConnectedError extends Error {
+  constructor() {
+    super(
+      'Apex Language Server が接続されていません。\n' +
+      'Salesforce Extension Pack をインストールし、Apex ファイルを開いてください。\n' +
+      'VS Code Marketplace: https://marketplace.visualstudio.com/items?itemName=salesforce.salesforcedx-vscode'
+    );
+    this.name = 'LspNotConnectedError';
+  }
+}
+
+async function tryLspDocumentSymbol(uri: vscode.Uri): Promise<vscode.DocumentSymbol[] | null> {
   try {
     const result = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
       'vscode.executeDocumentSymbolProvider',
       uri
     );
-    return result ?? [];
+    // undefined = no LSP provider registered
+    return result ?? null;
   } catch {
-    return [];
+    return null;
   }
 }
 
@@ -52,6 +65,7 @@ function rangeToLSP(r: vscode.Range) {
 // ParsedApexClass → ApexClassNode
 // -----------------------------------------------------------------------
 function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymbol[]): ApexClassNode {
+  // LSP が必須: メソッドシンボルが取得できなければ SOQL/DML の行範囲割り当て不可
   const lspMethods = lspSymbols.filter(
     (s) => s.kind === vscode.SymbolKind.Method || s.kind === vscode.SymbolKind.Constructor
   );
@@ -122,30 +136,9 @@ function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymb
       first.dmlOperations = [...first.dmlOperations, ...allDML.filter(d => !matchedDML.has(d))];
     }
   } else {
-    // LSP range なし: メソッドボディを正規表現で特定してメソッドごとに SOQL/DML を割り当て
-    const bodyMap = extractMethodBodies(parsed.source);
-    const assignedSOQL = new Set<string>();
-    const assignedDML  = new Set<string>();
-    for (const method of methods) {
-      const baseName = method.label.split('(')[0].trim();
-      const body = bodyMap.get(baseName);
-      if (body) {
-        method.soqlQueries   = extractSOQL(body);
-        method.dmlOperations = extractDML(body);
-        method.soqlQueries.forEach(q => assignedSOQL.add(q.raw));
-        method.dmlOperations.forEach(d => assignedDML.add(`${d.type}:${d.targetType}`));
-      }
-    }
-    // クラスレベル（メソッド外）の SOQL/DML を最初のメソッドに付与
-    const unmatched_soql = allSOQL.filter(q => !assignedSOQL.has(q.raw));
-    const unmatched_dml  = allDML.filter(d => !assignedDML.has(`${d.type}:${d.targetType}`));
-    if (unmatched_soql.length > 0 || unmatched_dml.length > 0) {
-      const first = methods.find(m => m.kind === 'apex-method') ?? methods[0];
-      if (first) {
-        first.soqlQueries   = [...first.soqlQueries,   ...unmatched_soql];
-        first.dmlOperations = [...first.dmlOperations, ...unmatched_dml];
-      }
-    }
+    // LSP range なし = Apex Language Server 未接続。
+    // SOQL/DML をメソッドへ正確に割り当てられないため何も割り当てない。
+    // 呼び出し元が LspNotConnectedError を throw して UI にエラーを表示する。
   }
 
   const lspClassSymbol = lspSymbols.find(
@@ -283,6 +276,7 @@ async function buildNodesAndEdges(
   await Promise.all(
     classEntries.map(async ([, parsed], i) => {
       const lspSymbols = await tryLspDocumentSymbol(parsed.uri);
+      if (!lspSymbols) throw new LspNotConnectedError();
       const classNode = buildClassNode(parsed, lspSymbols);
       classNodes.set(parsed.name, classNode);
       if (i % 5 === 0) {
@@ -803,6 +797,9 @@ export async function buildSingleNodeSnapshot(
     nodeId = triggerNode.id;
   } else {
     const lspSymbols = await tryLspDocumentSymbol(rootUri);
+    if (!lspSymbols) {
+      throw new LspNotConnectedError();
+    }
     const classNode = buildClassNode(parsed, lspSymbols);
     nodes.push(classNode);
     nodeId = classNode.id;
@@ -947,6 +944,7 @@ export async function buildNeighborNodes(
   await Promise.all(
     [...parsedNewClasses.entries()].map(async ([, parsedClass]) => {
       const lspSymbols = await tryLspDocumentSymbol(parsedClass.uri);
+      if (!lspSymbols) throw new LspNotConnectedError();
       const classNode = buildClassNode(parsedClass, lspSymbols);
       newClassNodes.set(parsedClass.name, classNode);
       newNodes.push(classNode);
@@ -1083,6 +1081,7 @@ export async function buildNeighborNodes(
   // メソッドレベルエッジ：target のメソッドが新ノードのメソッドを呼び出すエッジを生成
   if (newClassNodes.size > 0) {
     const targetLspSymbols = await tryLspDocumentSymbol(targetUri);
+    if (!targetLspSymbols) throw new LspNotConnectedError();
     const targetClassNode = buildClassNode(parsed, targetLspSymbols);
     // target クラスの SObject エッジも補完する
     addSObjectEdgesForMethods(targetClassNode.methods.filter(m => m.accessModifier !== 'private'));
