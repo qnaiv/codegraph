@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ExtensionToWebviewMessage, WebviewToExtensionMessage, GraphSnapshot } from '../shared/types';
 import { GraphStore } from './graph/GraphStore';
-import { buildGraphSnapshot, buildSingleNodeSnapshot, buildNeighborNodes, defaultViewState } from './graph/GraphBuilder';
+import { buildGraphSnapshot, buildSingleNodeSnapshot, buildNeighborNodes, defaultViewState, LspNotConnectedError } from './graph/GraphBuilder';
 import { resolveReferences } from './lsp/ReferenceResolver';
 import { createFileWatcher } from './FileWatcher';
 
@@ -119,7 +119,11 @@ export class WebviewPanelManager {
             },
           });
         } catch (e) {
-          this.post({ type: 'ERROR', payload: { message: String(e), code: 'EXPAND_ERROR' } });
+          if (e instanceof LspNotConnectedError) {
+            this.post({ type: 'ERROR', payload: { message: e.message, code: 'LSP_NOT_CONNECTED' } });
+          } else {
+            this.post({ type: 'ERROR', payload: { message: String(e), code: 'EXPAND_ERROR' } });
+          }
         }
         break;
       }
@@ -205,7 +209,11 @@ export class WebviewPanelManager {
       this.post({ type: 'GRAPH_UPDATE', payload: snapshot });
       this.setupFileWatcher(workspaceRoot);
     } catch (e) {
-      this.post({ type: 'ERROR', payload: { message: String(e), code: 'BUILD_ERROR' } });
+      if (e instanceof LspNotConnectedError) {
+        this.post({ type: 'ERROR', payload: { message: e.message, code: 'LSP_NOT_CONNECTED' } });
+      } else {
+        this.post({ type: 'ERROR', payload: { message: String(e), code: 'BUILD_ERROR' } });
+      }
     }
   }
 
@@ -220,7 +228,11 @@ export class WebviewPanelManager {
       this.post({ type: 'GRAPH_UPDATE', payload: snapshot });
       this.setupFileWatcher(workspaceRoot);
     } catch (e) {
-      this.post({ type: 'ERROR', payload: { message: String(e), code: 'BUILD_ERROR' } });
+      if (e instanceof LspNotConnectedError) {
+        this.post({ type: 'ERROR', payload: { message: e.message, code: 'LSP_NOT_CONNECTED' } });
+      } else {
+        this.post({ type: 'ERROR', payload: { message: String(e), code: 'BUILD_ERROR' } });
+      }
     }
   }
 

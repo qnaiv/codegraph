@@ -120,4 +120,16 @@ public with sharing class AccountService extends BaseService {
         List<Account> accounts = [SELECT Id FROM Account WHERE Id IN :accountIds];
         delete accounts;
     }
+
+    /**
+     * Account の全体レポートを生成し、5 ホップの連携処理で末端アーカイブまで実行する。
+     * Contact → Lead → Order → Notification → Report の順に委譲する。
+     * @param accountId 対象 Account ID
+     */
+    @AuraEnabled
+    public static String generateFullReport(Id accountId) {
+        Account acc = [SELECT Id, Name, Industry, AnnualRevenue FROM Account WHERE Id = :accountId LIMIT 1];
+        ContactService cs = new ContactService();
+        return cs.enrichWithLeadData(accountId, acc.Name);
+    }
 }

@@ -112,4 +112,21 @@ public with sharing class OrderService extends BaseService {
 
         NotificationService.notifyAccountUpdate(order.Account__c, 'Order Processing');
     }
+
+    /**
+     * Account に紐づく注文を集計し、通知・レポート配信ホップへ委譲する。
+     * @param accountId 対象 Account ID
+     * @param contactCount 前ホップから渡された Contact 件数
+     * @param leadCount 前ホップから渡された Lead 件数
+     */
+    public String finalizeAndNotify(Id accountId, Integer contactCount, Integer leadCount) {
+        List<Order__c> orders = [
+            SELECT Id, Status__c, TotalAmount__c
+            FROM Order__c
+            WHERE Account__c = :accountId
+        ];
+        String summary = 'Contacts:' + contactCount + ' Leads:' + leadCount + ' Orders:' + orders.size();
+        NotificationService.distributeReport(accountId, summary);
+        return summary;
+    }
 }

@@ -27,18 +27,50 @@ import { extractMethodCalls } from '../parser/apexParseUtils';
 import { executeReferences } from '../lsp/LspClient';
 
 // -----------------------------------------------------------------------
-// LSP を使って documentSymbol を補完 (任意・失敗しても続行)
+// LSP (Apex Language Server) から documentSymbol を取得する。
+// 未接続の場合は null を返す。
 // -----------------------------------------------------------------------
-async function tryLspDocumentSymbol(uri: vscode.Uri): Promise<vscode.DocumentSymbol[]> {
+export class LspNotConnectedError extends Error {
+  constructor() {
+    super(
+      'Apex Language Server が接続されていません。\n' +
+      'Salesforce Extension Pack をインストールし、Apex ファイルを開いてください。\n' +
+      'VS Code Marketplace: https://marketplace.visualstudio.com/items?itemName=salesforce.salesforcedx-vscode'
+    );
+    this.name = 'LspNotConnectedError';
+  }
+}
+
+async function tryLspDocumentSymbol(uri: vscode.Uri): Promise<vscode.DocumentSymbol[] | null> {
   try {
     const result = await vscode.commands.executeCommand<vscode.DocumentSymbol[]>(
       'vscode.executeDocumentSymbolProvider',
       uri
     );
-    return result ?? [];
+    // undefined = no LSP provider registered
+    return result ?? null;
   } catch {
-    return [];
+    return null;
   }
+}
+
+/**
+ * LSP が起動中の場合に備えてリトライするラッパー。
+ * 最大 retries 回、各 delayMs ミリ秒待ってから再試行する。
+ */
+async function tryLspDocumentSymbolWithRetry(
+  uri: vscode.Uri,
+  retries = 4,
+  delayMs = 3000
+): Promise<vscode.DocumentSymbol[] | null> {
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (attempt > 0) {
+      await new Promise<void>((r) => setTimeout(r, delayMs));
+    }
+    const result = await tryLspDocumentSymbol(uri);
+    if (result !== null) return result;
+  }
+  return null;
 }
 
 function rangeToLSP(r: vscode.Range) {
@@ -52,6 +84,7 @@ function rangeToLSP(r: vscode.Range) {
 // ParsedApexClass → ApexClassNode
 // -----------------------------------------------------------------------
 function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymbol[]): ApexClassNode {
+  // LSP が必須: メソッドシンボルが取得できなければ SOQL/DML の行範囲割り当て不可
   const lspMethods = lspSymbols.filter(
     (s) => s.kind === vscode.SymbolKind.Method || s.kind === vscode.SymbolKind.Constructor
   );
@@ -122,11 +155,9 @@ function buildClassNode(parsed: ParsedApexClass, lspSymbols: vscode.DocumentSymb
       first.dmlOperations = [...first.dmlOperations, ...allDML.filter(d => !matchedDML.has(d))];
     }
   } else {
-    if (methods.length > 0) {
-      const firstNonConstructor = methods.find((m) => m.kind === 'apex-method') ?? methods[0];
-      firstNonConstructor.soqlQueries   = allSOQL;
-      firstNonConstructor.dmlOperations = allDML;
-    }
+    // LSP range なし = Apex Language Server 未接続。
+    // SOQL/DML をメソッドへ正確に割り当てられないため何も割り当てない。
+    // 呼び出し元が LspNotConnectedError を throw して UI にエラーを表示する。
   }
 
   const lspClassSymbol = lspSymbols.find(
@@ -263,7 +294,8 @@ async function buildNodesAndEdges(
   const classEntries = [...parsedClasses.entries()];
   await Promise.all(
     classEntries.map(async ([, parsed], i) => {
-      const lspSymbols = await tryLspDocumentSymbol(parsed.uri);
+      const lspSymbols = await tryLspDocumentSymbolWithRetry(parsed.uri);
+      if (!lspSymbols) throw new LspNotConnectedError();
       const classNode = buildClassNode(parsed, lspSymbols);
       classNodes.set(parsed.name, classNode);
       if (i % 5 === 0) {
@@ -491,34 +523,44 @@ async function buildNodesAndEdges(
     }
 
     // 9b. Method → Method（クロスクラス静的呼び出し＋同一クラス内呼び出し）
-    const visibleMethodNames = new Set(visibleMethods.map(m => m.label));
-    const methodCallsInfo = extractMethodCalls(parsed.source, visibleMethodNames);
+    // LSP symbols include parameter signatures (e.g. "myMethod(String param)"),
+    // so build a map from base name → method node to match extractMethodCalls results.
+    const methodByBaseName = new Map<string, ApexMethodNode>();
+    for (const m of visibleMethods) {
+      const baseName = m.label.split('(')[0].trim();
+      if (!methodByBaseName.has(baseName)) methodByBaseName.set(baseName, m);
+    }
+    const visibleBaseNames = new Set(methodByBaseName.keys());
+    const methodCallsInfo = extractMethodCalls(parsed.source, visibleBaseNames);
 
     for (const { methodName, crossClassCalls, intraClassCalls } of methodCallsInfo) {
-      const sourceMethodId = `method:${parsed.name}.${methodName}`;
-      if (!visibleMethods.some(m => m.id === sourceMethodId)) continue;
+      const sourceMethod = methodByBaseName.get(methodName);
+      if (!sourceMethod) continue;
+      const sourceMethodId = sourceMethod.id;
 
       for (const { targetClass, targetMethod } of crossClassCalls) {
         const targetClassNode = classNodes.get(targetClass);
         if (!targetClassNode) continue;
-        const targetMethodId = `method:${targetClass}.${targetMethod}`;
-        if (!targetClassNode.methods.some(m => m.id === targetMethodId && m.accessModifier !== 'private')) continue;
+        const targetM = targetClassNode.methods.find(
+          m => m.accessModifier !== 'private' && m.label.split('(')[0].trim() === targetMethod
+        );
+        if (!targetM) continue;
         addEdge({
-          id: `edge:calls:${sourceMethodId}:${targetMethodId}`,
+          id: `edge:calls:${sourceMethodId}:${targetM.id}`,
           kind: 'calls',
           sourceId: sourceMethodId,
-          targetId: targetMethodId,
+          targetId: targetM.id,
         });
       }
 
       for (const callee of intraClassCalls) {
-        const targetMethodId = `method:${parsed.name}.${callee}`;
-        if (!visibleMethods.some(m => m.id === targetMethodId)) continue;
+        const targetM = methodByBaseName.get(callee);
+        if (!targetM) continue;
         addEdge({
-          id: `edge:calls:${sourceMethodId}:${targetMethodId}`,
+          id: `edge:calls:${sourceMethodId}:${targetM.id}`,
           kind: 'calls',
           sourceId: sourceMethodId,
-          targetId: targetMethodId,
+          targetId: targetM.id,
         });
       }
     }
@@ -773,7 +815,11 @@ export async function buildSingleNodeSnapshot(
     nodes.push(triggerNode);
     nodeId = triggerNode.id;
   } else {
-    const lspSymbols = await tryLspDocumentSymbol(rootUri);
+    onProgress?.('Apex Language Server を待機中…', 20);
+    const lspSymbols = await tryLspDocumentSymbolWithRetry(rootUri);
+    if (!lspSymbols) {
+      throw new LspNotConnectedError();
+    }
     const classNode = buildClassNode(parsed, lspSymbols);
     nodes.push(classNode);
     nodeId = classNode.id;
@@ -917,7 +963,8 @@ export async function buildNeighborNodes(
 
   await Promise.all(
     [...parsedNewClasses.entries()].map(async ([, parsedClass]) => {
-      const lspSymbols = await tryLspDocumentSymbol(parsedClass.uri);
+      const lspSymbols = await tryLspDocumentSymbolWithRetry(parsedClass.uri);
+      if (!lspSymbols) throw new LspNotConnectedError();
       const classNode = buildClassNode(parsedClass, lspSymbols);
       newClassNodes.set(parsedClass.name, classNode);
       newNodes.push(classNode);
@@ -1002,6 +1049,88 @@ export async function buildNeighborNodes(
     if (!bBasename.endsWith('.cls')) continue;
     const callerClass = bBasename.slice(0, -4);
     addEdge({ id: `edge:calls:cls:${callerClass}:${targetNodeId}`, kind: 'calls', sourceId: `cls:${callerClass}`, targetId: targetNodeId });
+  }
+
+  // SObject ノードと method → SObject エッジを生成
+  // （buildSingleNodeSnapshot では SObject ノードが作成されないため、展開時に補完する）
+  const addedSObjectNames = new Set<string>();
+
+  function ensureSObjectNode(objName: string) {
+    // Only create nodes for SObject type names (uppercase start), not unresolved variable names
+    if (!/^[A-Z]/.test(objName)) return;
+    if (addedSObjectNames.has(objName)) return;
+    addedSObjectNames.add(objName);
+    const isCustom = objName.endsWith('__c') || objName.endsWith('__mdt');
+    newNodes.push({
+      id: `sobject:${objName}`,
+      kind: 'sobject',
+      label: objName,
+      isCustom,
+      isCustomMetadata: objName.endsWith('__mdt'),
+      fields: [],
+      recordTypes: [],
+    } as SObjectNode);
+  }
+
+  function addSObjectEdgesForMethods(methods: ApexMethodNode[]) {
+    for (const method of methods) {
+      for (const q of method.soqlQueries) {
+        ensureSObjectNode(q.fromObject);
+        if (/^[A-Z]/.test(q.fromObject)) addEdge({ id: `edge:soql:${method.id}:sobject:${q.fromObject}`, kind: 'soql-references', sourceId: method.id, targetId: `sobject:${q.fromObject}` });
+        for (const extra of q.additionalObjects) {
+          ensureSObjectNode(extra);
+          if (/^[A-Z]/.test(extra)) addEdge({ id: `edge:soql:${method.id}:sobject:${extra}`, kind: 'soql-references', sourceId: method.id, targetId: `sobject:${extra}` });
+        }
+      }
+      for (const dml of method.dmlOperations) {
+        if (!/^[A-Z]/.test(dml.targetType)) continue; // skip unresolved variable names
+        ensureSObjectNode(dml.targetType);
+        const kind: GraphEdge['kind'] = dml.type === 'insert' || dml.type === 'upsert' ? 'dml-insert'
+          : dml.type === 'delete' || dml.type === 'undelete' ? 'dml-delete'
+          : 'dml-update';
+        addEdge({ id: `edge:dml:${method.id}:sobject:${dml.targetType}:${kind}`, kind, sourceId: method.id, targetId: `sobject:${dml.targetType}` });
+      }
+    }
+  }
+
+  // 新ノード の SObject エッジ
+  for (const [, classNode] of newClassNodes) {
+    addSObjectEdgesForMethods(classNode.methods);
+  }
+
+  // メソッドレベルエッジ：target のメソッドが新ノードのメソッドを呼び出すエッジを生成
+  if (newClassNodes.size > 0) {
+    const targetLspSymbols = await tryLspDocumentSymbolWithRetry(targetUri);
+    if (!targetLspSymbols) throw new LspNotConnectedError();
+    const targetClassNode = buildClassNode(parsed, targetLspSymbols);
+    // target クラスの SObject エッジも補完する
+    addSObjectEdgesForMethods(targetClassNode.methods.filter(m => m.accessModifier !== 'private'));
+    const targetVisibleMethods = targetClassNode.methods.filter(m => m.accessModifier !== 'private');
+    const methodByBaseName = new Map<string, ApexMethodNode>();
+    for (const m of targetVisibleMethods) {
+      const baseName = m.label.split('(')[0].trim();
+      if (!methodByBaseName.has(baseName)) methodByBaseName.set(baseName, m);
+    }
+    const visibleBaseNames = new Set(methodByBaseName.keys());
+    const methodCallsInfo = extractMethodCalls(source, visibleBaseNames);
+    for (const { methodName, crossClassCalls } of methodCallsInfo) {
+      const sourceMethod = methodByBaseName.get(methodName);
+      if (!sourceMethod) continue;
+      for (const { targetClass, targetMethod } of crossClassCalls) {
+        const calledClassNode = newClassNodes.get(targetClass);
+        if (!calledClassNode) continue;
+        const calledMethod = calledClassNode.methods.find(
+          m => m.accessModifier !== 'private' && m.label.split('(')[0].trim() === targetMethod
+        );
+        if (!calledMethod) continue;
+        addEdge({
+          id: `edge:calls:${sourceMethod.id}:${calledMethod.id}`,
+          kind: 'calls',
+          sourceId: sourceMethod.id,
+          targetId: calledMethod.id,
+        });
+      }
+    }
   }
 
   onProgress?.('隣接ノード数を算出中…', 95);

@@ -55,6 +55,21 @@ public with sharing class ContactService extends BaseService {
     }
 
     /**
+     * Account に紐づく Contact を取得し、リードデータ集計を次ホップ（LeadService）へ委譲する。
+     * @param accountId 対象 Account ID
+     * @param accountName Account 名（Lead 検索キー）
+     */
+    public String enrichWithLeadData(Id accountId, String accountName) {
+        List<Contact> contacts = [
+            SELECT Id, FirstName, LastName, Email, LeadSource
+            FROM Contact
+            WHERE AccountId = :accountId AND IsDeleted = false
+        ];
+        LeadService ls = new LeadService();
+        return ls.attachToOrders(accountId, accountName, contacts.size());
+    }
+
+    /**
      * 姓が空でない Contact のみ有効とみなす
      */
     public override Boolean validate(SObject record) {

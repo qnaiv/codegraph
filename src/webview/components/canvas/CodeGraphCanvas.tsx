@@ -134,6 +134,8 @@ function toRFEdge(gEdge: GraphEdge, isHighlighted: boolean, isAnySelected: boole
     id: gEdge.id,
     source: gEdge.sourceId,
     target: gEdge.targetId,
+    sourceHandle: gEdge.metadata?.sourceHandle,
+    targetHandle: gEdge.metadata?.targetHandle,
     type: 'codeGraph',
     animated: gEdge.kind === 'soql-references' || gEdge.kind.startsWith('dml-'),
     data: {
@@ -159,6 +161,62 @@ function ProgressOverlay({ stage, percent }: { stage: string; percent: number })
         <div style={{ width: `${percent}%`, height: '100%', background: '#4a90d9', borderRadius: 3, transition: 'width 0.3s' }} />
       </div>
       <div style={{ fontSize: 11, marginTop: 8, color: '#888' }}>{percent}%</div>
+    </div>
+  );
+}
+
+// -----------------------------------------------------------------------
+// LSP error overlay
+// -----------------------------------------------------------------------
+function LspErrorOverlay({ onDismiss }: { onDismiss: () => void }) {
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, zIndex: 20,
+      display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+      background: 'rgba(10,10,20,0.95)', color: '#cce4f7',
+      padding: 32,
+    }}>
+      <div style={{ fontSize: 20, marginBottom: 16 }}>⚠️ Apex Language Server 未接続</div>
+      <div style={{ fontSize: 13, textAlign: 'center', maxWidth: 480, lineHeight: 1.7, color: '#aac0d8' }}>
+        <p style={{ margin: '0 0 12px' }}>
+          CodeGraph は Apex Language Server（LSP）が必要です。<br />
+          LSP が接続されていないため、グラフを構築できません。
+        </p>
+        <p style={{ margin: '0 0 12px', fontWeight: 'bold', color: '#cce4f7' }}>接続する方法：</p>
+        <ol style={{ textAlign: 'left', margin: '0 0 16px', paddingLeft: 24 }}>
+          <li style={{ marginBottom: 8 }}>
+            VS Code の Extensions（拡張機能）パネルを開く
+          </li>
+          <li style={{ marginBottom: 8 }}>
+            <strong>Salesforce Extension Pack</strong> を検索してインストール
+          </li>
+          <li style={{ marginBottom: 8 }}>
+            VS Code を再起動し、Apex ファイル（<code>.cls</code>）を開く
+          </li>
+          <li style={{ marginBottom: 8 }}>
+            ステータスバーの下部に <em>"Apex Language Server Started"</em> と表示されるまで待つ
+          </li>
+          <li>
+            CodeGraph パネルを開き直す（または Apex ファイルを開いた状態でリロード）
+          </li>
+        </ol>
+        <a
+          href="https://marketplace.visualstudio.com/items?itemName=salesforce.salesforcedx-vscode"
+          style={{ color: '#4a90d9', fontSize: 12 }}
+        >
+          Salesforce Extension Pack — VS Code Marketplace
+        </a>
+      </div>
+      <button
+        onClick={onDismiss}
+        style={{
+          marginTop: 24, background: '#1a3a5a', color: '#cce4f7',
+          border: '1px solid #4a90d9', borderRadius: 4,
+          padding: '6px 20px', fontSize: 12, cursor: 'pointer',
+        }}
+      >
+        閉じる
+      </button>
     </div>
   );
 }
@@ -214,6 +272,8 @@ export function CodeGraphCanvas() {
     setSearchQuery,
     setFollowMode,
     setPendingExpansion,
+    errorCode,
+    clearError,
   } = useGraphStore();
   const { selectedNodeIds, highlightedEdgeIds, activeFilters } = viewState;
   const hasSelection = selectedNodeIds.length > 0;
@@ -251,23 +311,36 @@ export function CodeGraphCanvas() {
   const methodFocusInfo = useMemo(() => {
     if (!selectedMethodId) return null;
     const sourceClassId = classIdFromMethodId(selectedMethodId);
+
+    // BFS: traverse the full transitive method call graph
+    const visitedMethods = new Set<string>([selectedMethodId]);
+    const queue: string[] = [selectedMethodId];
     const calleeClassIds = new Set<string>([sourceClassId]);
     const calleeMethodIds = new Set<string>();
 
-    for (const e of gEdges) {
-      if (e.sourceId !== selectedMethodId) continue;
-      if (e.targetId.startsWith('method:')) {
-        const targetClassId = classIdFromMethodId(e.targetId);
-        if (targetClassId !== sourceClassId) {
-          calleeClassIds.add(targetClassId);
-          calleeMethodIds.add(e.targetId);
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      const curClassId = classIdFromMethodId(cur);
+      for (const e of gEdges) {
+        if (e.sourceId !== cur) continue;
+        if (e.targetId.startsWith('method:')) {
+          const tClassId = classIdFromMethodId(e.targetId);
+          if (tClassId !== curClassId) {
+            calleeClassIds.add(tClassId);
+            calleeMethodIds.add(e.targetId);
+          }
+          if (!visitedMethods.has(e.targetId)) {
+            visitedMethods.add(e.targetId);
+            queue.push(e.targetId);
+          }
+        }
+        if (e.targetId.startsWith('sobject:')) {
+          calleeClassIds.add(e.targetId);
         }
       }
-      if (e.targetId.startsWith('sobject:')) {
-        calleeClassIds.add(e.targetId);
-      }
     }
-    return { sourceClassId, calleeClassIds, calleeMethodIds };
+
+    return { sourceClassId, calleeClassIds, calleeMethodIds, visitedMethods };
   }, [selectedMethodId, gEdges]);
 
   // Focus visible set (class focus mode)
@@ -288,6 +361,7 @@ export function CodeGraphCanvas() {
   // Filtered nodes: method focus > class focus > search > all
   const filteredNodes = useMemo(() => {
     if (methodFocusInfo) {
+      // Show only nodes explicitly in the transitive call chain (no automatic inner-class inclusion)
       return baseNodes.filter((n) => methodFocusInfo.calleeClassIds.has(n.id));
     }
     if (focusRootId) return baseNodes.filter((n) => focusVisibleIds.has(n.id));
@@ -300,13 +374,55 @@ export function CodeGraphCanvas() {
 
   const filteredNodeIds = useMemo(() => new Set(filteredNodes.map((n) => n.id)), [filteredNodes]);
 
+  // Method focus: class-level edges derived from method→method/sobject call edges,
+  // covering ALL visited methods in the transitive call chain.
+  const methodFocusClassEdges = useMemo((): GraphEdge[] => {
+    if (!methodFocusInfo || !selectedMethodId) return [];
+    const seen = new Set<string>();
+    const result: GraphEdge[] = [];
+
+    for (const e of gEdges) {
+      // Include edges from any method in the transitive call chain
+      if (!methodFocusInfo.visitedMethods.has(e.sourceId)) continue;
+      const isMethodTarget = e.targetId.startsWith('method:');
+      const isSObjectTarget = e.targetId.startsWith('sobject:');
+      const targetId = isMethodTarget
+        ? classIdFromMethodId(e.targetId)
+        : isSObjectTarget ? e.targetId : null;
+      if (!targetId) continue;
+      if (!filteredNodeIds.has(targetId)) continue;
+      const sourceClassId = classIdFromMethodId(e.sourceId);
+      // Skip intra-class edges
+      if (!isSObjectTarget && targetId === sourceClassId) continue;
+      const edgeKey = isMethodTarget
+        ? `${e.sourceId}:${e.targetId}`
+        : `${e.sourceId}:${targetId}:${e.kind}`;
+      const edgeId = `method-focus:${edgeKey}`;
+      if (!seen.has(edgeId)) {
+        seen.add(edgeId);
+        result.push({
+          id: edgeId,
+          kind: e.kind,
+          sourceId: sourceClassId,
+          targetId,
+          metadata: {
+            sourceHandle: e.sourceId,
+            targetHandle: isMethodTarget ? e.targetId : undefined,
+          },
+        });
+      }
+    }
+
+    return result;
+  }, [methodFocusInfo, selectedMethodId, gEdges, filteredNodeIds]);
+
   // Classes expanded to method level
   const expandedClassIds = useMemo(() => {
     if (methodFocusInfo) {
-      // Method focus: expand all shown classes
+      // Method focus: expand ALL apex class nodes in the chain (excluding inner classes)
       const ids = new Set<string>();
       for (const n of filteredNodes) {
-        if (isApexClass(n)) ids.add(n.id);
+        if (isApexClass(n) && !(n as ApexClassNode).outerClassId) ids.add(n.id);
       }
       return ids;
     }
@@ -317,15 +433,17 @@ export function CodeGraphCanvas() {
     return ids;
   }, [filteredNodes, expandedMethodNodeIds, methodFocusInfo]);
 
-  // Edges: class-level only (methods rendered as HTML, no React Flow child nodes)
-  const filteredEdges = useMemo(() =>
-    gEdges.filter((e) =>
+  // Edges: in method focus mode use synthetic class-level edges derived from method calls;
+  // otherwise show class-level edges only (method edges rendered as HTML, not React Flow nodes).
+  const filteredEdges = useMemo(() => {
+    if (methodFocusInfo) return methodFocusClassEdges;
+    return gEdges.filter((e) =>
       !e.sourceId.startsWith('method:') &&
       !e.targetId.startsWith('method:') &&
       filteredNodeIds.has(e.sourceId) &&
       filteredNodeIds.has(e.targetId),
-    ),
-  [gEdges, filteredNodeIds]);
+    );
+  }, [gEdges, filteredNodeIds, methodFocusInfo, methodFocusClassEdges]);
 
   // Per-node expand/collapse state in class focus mode
   const nodeExpandState = useMemo(() => {
@@ -374,10 +492,14 @@ export function CodeGraphCanvas() {
 
       if (isApexClass(n) && expandedClassIds.has(n.id)) {
         const publicMethods = n.methods.filter(m => m.accessModifier !== 'private');
-        // Callee classes: show only the called methods
+        // Callee classes: show only the specifically-called methods when known;
+        // fall back to all public methods when no method-level edges were detected.
         const isCalleeClass = methodFocusInfo !== null && n.id !== methodFocusInfo.sourceClassId;
-        const shownCount = (isCalleeClass && methodFocusInfo)
-          ? publicMethods.filter(m => methodFocusInfo.calleeMethodIds.has(m.id)).length
+        const hasMethodEdges = (methodFocusInfo?.calleeMethodIds.size ?? 0) > 0;
+        // Pass null when calleeMethodIds is empty so callee classes show all methods
+        const effectiveCalleeMethodIds = hasMethodEdges ? methodFocusInfo!.calleeMethodIds : null;
+        const shownCount = (isCalleeClass && effectiveCalleeMethodIds)
+          ? publicMethods.filter(m => effectiveCalleeMethodIds.has(m.id)).length
           : publicMethods.length;
         // Only the one selected method row is detail-sized; all others stay compact
         const detailCount = (selectedMethodId && publicMethods.some(m => m.id === selectedMethodId)) ? 1 : 0;
@@ -391,7 +513,7 @@ export function CodeGraphCanvas() {
             graphNode: n,
             isContainer: true,
             isCalleeClass,
-            calleeMethodIds: methodFocusInfo?.calleeMethodIds ?? null,
+            calleeMethodIds: effectiveCalleeMethodIds,
             selectedMethodId,
           },
         });
@@ -430,6 +552,29 @@ export function CodeGraphCanvas() {
     setPendingExpansion(nodeId);
     postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: gNode.uri, alreadyIncludedUris } });
   }, [gNodes, setPendingExpansion]);
+
+  // Auto-expand source class and all callee classes one hop at a time (chain reaction)
+  React.useEffect(() => {
+    if (!selectedMethodId || !methodFocusInfo) return;
+    const { neighborCounts: counts, nodes: currentNodes, pendingExpansionNodeId: pending } = useGraphStore.getState();
+    if (pending) return;
+
+    // Expand the source class first, then any callee class with unloaded neighbors
+    const candidates = [methodFocusInfo.sourceClassId, ...methodFocusInfo.calleeClassIds];
+    for (const classId of candidates) {
+      if (classId.startsWith('sobject:')) continue;
+      const count = counts[classId] ?? 0;
+      if (count <= 0) continue;
+      const gNode = currentNodes.find((n) => n.id === classId);
+      if (!gNode || !hasLocation(gNode)) continue;
+      const alreadyIncludedUris = currentNodes
+        .filter((n) => hasLocation(n))
+        .map((n) => (n as { uri: string }).uri);
+      useGraphStore.getState().setPendingExpansion(classId);
+      postMessage({ type: 'EXPAND_NODE', payload: { nodeUri: (gNode as { uri: string }).uri, alreadyIncludedUris } });
+      return; // one expansion at a time; re-fires after mergeExpansion updates gEdges
+    }
+  }, [selectedMethodId, methodFocusInfo]); // re-fires after each expansion via methodFocusInfo change
 
   // Method click callback
   const handleMethodClick = useCallback((methodId: string) => {
@@ -551,6 +696,7 @@ export function CodeGraphCanvas() {
   return (
     <div style={{ width: '100%', height: '100vh', position: 'relative', background: '#0a0c14' }}>
       {progress && <ProgressOverlay stage={progress.stage} percent={progress.percent} />}
+      {errorCode === 'LSP_NOT_CONNECTED' && <LspErrorOverlay onDismiss={clearError} />}
 
       <ReactFlow
         nodes={nodes}

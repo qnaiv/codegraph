@@ -41,6 +41,21 @@ public with sharing class NotificationService extends BaseService {
         }
     }
 
+    /**
+     * レポートをアカウントの Contact 全員へ配信し、アーカイブを ReportService へ委譲する。
+     * @param accountId 対象 Account ID
+     * @param reportData レポート内容
+     */
+    public static void distributeReport(Id accountId, String reportData) {
+        List<Contact> recipients = [
+            SELECT Id FROM Contact
+            WHERE AccountId = :accountId AND Email != null
+            LIMIT 10
+        ];
+        ReportService rs = new ReportService();
+        rs.archive(accountId, reportData, recipients.size());
+    }
+
     public override Boolean validate(SObject record) {
         return record != null && record.Id != null;
     }

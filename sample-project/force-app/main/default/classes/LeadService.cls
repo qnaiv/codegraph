@@ -54,4 +54,21 @@ public with sharing class LeadService extends BaseService {
         update lead;
         return new LeadResult(true, 'Converted: ' + lead.Name);
     }
+
+    /**
+     * Account 名に紐づく Lead を取得し、注文分析を次ホップ（OrderService）へ委譲する。
+     * @param accountId 対象 Account ID
+     * @param accountName Lead 検索に使用する Account 名
+     * @param contactCount 前ホップから渡された Contact 件数
+     */
+    public String attachToOrders(Id accountId, String accountName, Integer contactCount) {
+        List<Lead> leads = [
+            SELECT Id, Status, LeadSource, Company
+            FROM Lead
+            WHERE Company = :accountName AND IsConverted = false
+            LIMIT 100
+        ];
+        OrderService os = new OrderService();
+        return os.finalizeAndNotify(accountId, contactCount, leads.size());
+    }
 }
